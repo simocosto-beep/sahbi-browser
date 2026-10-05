@@ -26,11 +26,11 @@ async function browser(){
   }
   return page;
 }
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.1.0",status:"ok"}));
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.3.0",status:"ok"}));
 app.get("/health",(_req,res)=>res.json({ok:true}));
 
 function createMcpServer(){
-  const mcp = new McpServer({name:"sahbi-browser",version:"0.2.0"});
+  const mcp = new McpServer({name:"sahbi-browser",version:"0.3.0"});
   mcp.tool("browser_open","Open a URL in Sahbi Browser",{url:z.string().url()},async({url})=>{
     const p=await browser(); await p.goto(url,{waitUntil:"domcontentloaded",timeout:30000});
     return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};
@@ -52,6 +52,21 @@ function createMcpServer(){
     const items=await p.locator("a,button,input,textarea,select").evaluateAll(els=>els.slice(0,300).map((e,i)=>({i,tag:e.tagName.toLowerCase(),text:(e.innerText||e.getAttribute("aria-label")||e.getAttribute("placeholder")||"").trim(),type:e.getAttribute("type")})));
     return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title(),items})}]};
   });
+  mcp.tool("browser_info","Get current page URL, title and viewport",{},async()=>{const p=await browser();return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title(),viewport:await p.evaluate(()=>({width:innerWidth,height:innerHeight}))})}]};});
+  mcp.tool("browser_back","Go back in browser history",{},async()=>{const p=await browser();await p.goBack({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};});
+  mcp.tool("browser_forward","Go forward in browser history",{},async()=>{const p=await browser();await p.goForward({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};});
+  mcp.tool("browser_new_tab","Open a new tab",{url:z.string().url().optional()},async({url})=>{const p=await context.newPage();page=p;if(url)await p.goto(url,{waitUntil:"domcontentloaded",timeout:30000});return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};});
+  mcp.tool("browser_tabs","List open tabs",{},async()=>{await browser();const pages=context.pages();const tabs=[];for(let i=0;i<pages.length;i++)tabs.push({index:i,url:pages[i].url(),title:await pages[i].title()});return {content:[{type:"text",text:JSON.stringify(tabs)}]};});
+  mcp.tool("browser_switch_tab","Switch active tab",{index:z.number().int().nonnegative()},async({index})=>{await browser();const pages=context.pages();if(!pages[index])throw new Error("Tab not found");page=pages[index];await page.bringToFront();return {content:[{type:"text",text:JSON.stringify({index,url:page.url(),title:await page.title()})}]};});
+  mcp.tool("browser_close_tab","Close a tab",{index:z.number().int().nonnegative().optional()},async({index})=>{await browser();const pages=context.pages();const target=index===undefined?page:pages[index];if(!target)throw new Error("Tab not found");await target.close();page=context.pages().at(-1)||await context.newPage();return {content:[{type:"text",text:JSON.stringify({ok:true,url:page.url()})}]};});
+  mcp.tool("browser_press","Press a keyboard key",{key:z.string()},async({key})=>{const p=await browser();await p.keyboard.press(key);return {content:[{type:"text",text:JSON.stringify({ok:true})}]};});
+  mcp.tool("browser_scroll","Scroll page",{direction:z.enum(["up","down"]),pixels:z.number().int().positive().max(10000).optional()},async({direction,pixels})=>{const p=await browser();const n=(pixels||700)*(direction==="up"?-1:1);await p.evaluate(y=>scrollBy(0,y),n);return {content:[{type:"text",text:JSON.stringify({ok:true,scrollY:await p.evaluate(()=>scrollY)})}]};});
+  mcp.tool("browser_click_selector","Click an element using a CSS selector",{selector:z.string()},async({selector})=>{const p=await browser();await p.locator(selector).first().click();return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title()})}]};});
+  mcp.tool("browser_fill_selector","Fill a field using a CSS selector",{selector:z.string(),value:z.string()},async({selector,value})=>{const p=await browser();await p.locator(selector).first().fill(value);return {content:[{type:"text",text:JSON.stringify({ok:true})}]};});
+  mcp.tool("browser_click_role","Click by accessibility role and name",{role:z.string(),name:z.string()},async({role,name})=>{const p=await browser();await p.getByRole(role,{name}).first().click();return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title()})}]};});
+  mcp.tool("browser_screenshot","Capture the current page screenshot as base64 PNG",{fullPage:z.boolean().optional()},async({fullPage})=>{const p=await browser();const buf=await p.screenshot({type:"png",fullPage:!!fullPage});return {content:[{type:"image",data:buf.toString("base64"),mimeType:"image/png"}]};});
+  mcp.tool("browser_cookies","List cookies for the current browser context",{},async()=>{await browser();const cookies=await context.cookies();return {content:[{type:"text",text:JSON.stringify(cookies.map(c=>({name:c.name,domain:c.domain,path:c.path,expires:c.expires,httpOnly:c.httpOnly,secure:c.secure,sameSite:c.sameSite})))}]};});
+  mcp.tool("browser_wait","Wait for a number of milliseconds",{ms:z.number().int().min(0).max(15000)},async({ms})=>{const p=await browser();await p.waitForTimeout(ms);return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url()})}]};});
   return mcp;
 }
 app.all("/mcp",auth,async(req,res)=>{
