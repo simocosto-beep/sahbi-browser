@@ -1,5 +1,8 @@
 import express from "express";
 import { chromium } from "playwright";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
 
 const app = express();
 app.use(express.json({limit:"2mb"}));
@@ -25,6 +28,39 @@ async function browser(){
 }
 app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.1.0",status:"ok"}));
 app.get("/health",(_req,res)=>res.json({ok:true}));
+
+function createMcpServer(){
+  const mcp = new McpServer({name:"sahbi-browser",version:"0.2.0"});
+  mcp.tool("browser_open","Open a URL in Sahbi Browser",{url:z.string().url()},async({url})=>{
+    const p=await browser(); await p.goto(url,{waitUntil:"domcontentloaded",timeout:30000});
+    return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};
+  });
+  mcp.tool("browser_read","Read visible text from the current page",{},async()=>{
+    const p=await browser(); const body=(await p.locator("body").innerText()).slice(0,50000);
+    return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title(),text:body})}]};
+  });
+  mcp.tool("browser_click","Click the first element matching visible text",{text:z.string(),exact:z.boolean().optional()},async({text,exact})=>{
+    const p=await browser(); await p.getByText(text,{exact:!!exact}).first().click();
+    return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title()})}]};
+  });
+  mcp.tool("browser_fill","Fill a form field by label",{label:z.string(),value:z.string()},async({label,value})=>{
+    const p=await browser(); await p.getByLabel(label).first().fill(value);
+    return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
+  });
+  mcp.tool("browser_snapshot","List interactive elements on the current page",{},async()=>{
+    const p=await browser();
+    const items=await p.locator("a,button,input,textarea,select").evaluateAll(els=>els.slice(0,300).map((e,i)=>({i,tag:e.tagName.toLowerCase(),text:(e.innerText||e.getAttribute("aria-label")||e.getAttribute("placeholder")||"").trim(),type:e.getAttribute("type")})));
+    return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title(),items})}]};
+  });
+  return mcp;
+}
+app.all("/mcp",auth,async(req,res)=>{
+  const mcp=createMcpServer();
+  const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});
+  res.on("close",()=>{transport.close();mcp.close();});
+  try{await mcp.connect(transport); await transport.handleRequest(req,res,req.body);}
+  catch(e){if(!res.headersSent)res.status(500).json({error:e.message});}
+});
 app.use("/api",auth);
 app.post("/api/open",async(req,res)=>{
   try{const p=await browser(); await p.goto(req.body.url,{waitUntil:"domcontentloaded",timeout:30000}); res.json({ok:true,url:p.url(),title:await p.title()});}
