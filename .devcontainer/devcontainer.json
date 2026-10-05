@@ -1,0 +1,19 @@
+{
+  "name": "Sahbi Browser",
+  "image": "mcr.microsoft.com/playwright:v1.55.0-noble",
+  "forwardPorts": [
+    8080
+  ],
+  "portsAttributes": {
+    "8080": {
+      "label": "Sahbi Browser MCP",
+      "onAutoForward": "notify",
+      "visibility": "public"
+    }
+  },
+  "postCreateCommand": "npm install",
+  "postStartCommand": "nohup npm start > /tmp/sahbi-browser.log 2>&1 &",
+  "remoteEnv": {
+    "PORT": "8080"
+  }
+}
