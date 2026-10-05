@@ -9,6 +9,7 @@ app.use(express.json({limit:"2mb"}));
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = process.env.SAHBI_TOKEN || "";
 let context, page;
+const mcpStats={requests:0,lastMethod:null,lastAt:null,lastStatus:null};
 
 function auth(req,res,next){
   if (!TOKEN) return next();
@@ -27,7 +28,8 @@ async function browser(){
   return page;
 }
 app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.3.0",status:"ok"}));
-app.get("/health",(_req,res)=>res.json({ok:true}));
+app.get("/health",(_req,res)=>res.json({ok:true,version:"0.3.1",mcp:"/mcp"}));
+app.get("/mcp-status",auth,(_req,res)=>res.json({ok:true,version:"0.3.1",...mcpStats}));
 
 function createMcpServer(){
   const mcp = new McpServer({name:"sahbi-browser",version:"0.3.0"});
@@ -70,11 +72,12 @@ function createMcpServer(){
   return mcp;
 }
 app.all("/mcp",auth,async(req,res)=>{
+  mcpStats.requests++; mcpStats.lastMethod=req.body?.method||req.method; mcpStats.lastAt=new Date().toISOString();
   const mcp=createMcpServer();
   const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});
   res.on("close",()=>{transport.close();mcp.close();});
-  try{await mcp.connect(transport); await transport.handleRequest(req,res,req.body);}
-  catch(e){if(!res.headersSent)res.status(500).json({error:e.message});}
+  try{await mcp.connect(transport); await transport.handleRequest(req,res,req.body); mcpStats.lastStatus=res.statusCode;}
+  catch(e){mcpStats.lastStatus=500; console.error("MCP error",e); if(!res.headersSent)res.status(500).json({error:e.message});}
 });
 app.use("/api",auth);
 app.post("/api/open",async(req,res)=>{
