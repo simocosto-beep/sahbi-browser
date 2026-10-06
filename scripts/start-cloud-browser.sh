@@ -14,13 +14,15 @@ pkill -f "x11vnc" 2>/dev/null || true
 pkill -f "websockify" 2>/dev/null || true
 pkill -f "fluxbox" 2>/dev/null || true
 pkill -f "node src/server.js" 2>/dev/null || true
+
+CHROME="$(node -e 'import("playwright").then(({chromium})=>console.log(chromium.executablePath()))')"
+pkill -f "$CHROME" 2>/dev/null || true
 pkill -f "remote-debugging-port=9222" 2>/dev/null || true
+rm -f .data/profile/SingletonLock .data/profile/SingletonCookie .data/profile/SingletonSocket 2>/dev/null || true
 
 nohup Xvfb :99 -screen 0 1440x900x24 -ac +extension RANDR > /tmp/sahbi-xvfb.log 2>&1 &
 sleep 1
 nohup fluxbox > /tmp/sahbi-fluxbox.log 2>&1 &
-
-CHROME="$(node -e 'import("playwright").then(({chromium})=>console.log(chromium.executablePath()))')"
 
 nohup "$CHROME"   --remote-debugging-address=127.0.0.1   --remote-debugging-port=9222   --user-data-dir="/workspaces/sahbi-browser/.data/profile"   --no-sandbox   --disable-dev-shm-usage   --no-first-run   --no-default-browser-check   --window-size=1440,900   about:blank > /tmp/sahbi-chromium.log 2>&1 &
 
