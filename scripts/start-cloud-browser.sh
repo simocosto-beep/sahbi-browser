@@ -35,7 +35,15 @@ if [ -z "$WEBSOCKIFY_BIN" ]; then
   echo "websockify is missing. Run: sudo apt-get install -y websockify python3-websockify" >&2
   exit 1
 fi
-nohup "$WEBSOCKIFY_BIN" --web=/usr/share/novnc/ 6080 127.0.0.1:5900 > /tmp/sahbi-novnc.log 2>&1 &
+NOVNC_WEB=""
+for d in /usr/share/novnc /usr/share/novnc/ /usr/share/novnc/web /opt/novnc; do
+  if [ -f "$d/vnc.html" ]; then NOVNC_WEB="$d"; break; fi
+done
+if [ -z "$NOVNC_WEB" ]; then
+  echo "noVNC web root not found. Install package: apt-get install -y novnc" >&2
+  exit 1
+fi
+nohup "$WEBSOCKIFY_BIN" --web="$NOVNC_WEB" 6080 127.0.0.1:5900 > /tmp/sahbi-novnc.log 2>&1 &
 
 for i in $(seq 1 30); do
   if curl -fsS http://127.0.0.1:9222/json/version >/dev/null 2>&1; then
