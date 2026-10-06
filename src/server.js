@@ -10,6 +10,7 @@ app.use(express.json({limit:"2mb"}));
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = process.env.SAHBI_TOKEN || "";
 const PLUGIN_KEY = TOKEN ? createHash("sha256").update(`sahbi-plugin:${TOKEN}`).digest("hex") : "";
+const LEGACY_PLUGIN_KEY = process.env.SAHBI_LEGACY_PLUGIN_KEY || "";
 let context, page, cdpBrowser;
 let cloudTakeoverActive=false;
 const PROFILE_DIR = process.env.SAHBI_PROFILE_DIR || (process.env.RAILWAY_ENVIRONMENT ? "/data/profile" : "/workspaces/sahbi-browser/.data/profile");
@@ -60,17 +61,23 @@ function chooseLocator(p,{selector,label,text}){
 }
 
 function auth(req,res,next){
-  if (!TOKEN) return res.status(503).json({error:"server token not configured"});
-  const v=req.headers.authorization||"";
-  if(v!==`Bearer ${TOKEN}`) return res.status(401).json({error:"unauthorized"});
+  const v=String(req.headers.authorization||"");
+  const bearer=v.startsWith("Bearer ") ? v.slice(7) : "";
+  const directOk=Boolean(TOKEN) && bearer===TOKEN;
+  const legacyOk=Boolean(LEGACY_PLUGIN_KEY) && bearer &&
+    createHash("sha256").update(`sahbi-plugin:${bearer}`).digest("hex")===LEGACY_PLUGIN_KEY;
+  if(!directOk && !legacyOk) return res.status(401).json({error:"unauthorized"});
   next();
 }
 function pluginCapabilityAuth(req,res,next){
-  if (!PLUGIN_KEY) return res.status(503).json({error:"plugin capability not configured"});
   const supplied=String(req.params.key||"");
-  const a=Buffer.from(supplied);
-  const b=Buffer.from(PLUGIN_KEY);
-  if(a.length!==b.length || !timingSafeEqual(a,b)) return res.status(404).json({error:"not found"});
+  const accepted=[PLUGIN_KEY,LEGACY_PLUGIN_KEY].filter(Boolean);
+  if(!accepted.length) return res.status(503).json({error:"plugin capability not configured"});
+  const ok=accepted.some(key=>{
+    const a=Buffer.from(supplied), b=Buffer.from(key);
+    return a.length===b.length && timingSafeEqual(a,b);
+  });
+  if(!ok) return res.status(404).json({error:"not found"});
   next();
 }
 async function browser(options={}){
