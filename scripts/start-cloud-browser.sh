@@ -60,4 +60,21 @@ fi
 echo "Chromium visible session ready on DISPLAY :99"
 echo "noVNC listening on port 6080"
 echo "Starting Sahbi Browser MCP on port ${PORT:-8080}"
+
+# GitHub Codespaces resets public forwarded ports to private after a restart.
+# Retry the official GitHub CLI command in the background so Sahbi becomes
+# reachable again without requiring the Ports panel each time.
+(
+  if command -v gh >/dev/null 2>&1 && [ -n "${CODESPACE_NAME:-}" ]; then
+    for i in $(seq 1 18); do
+      if gh codespace ports visibility 8080:public 6080:public -c "$CODESPACE_NAME" >/tmp/sahbi-port-visibility.log 2>&1; then
+        echo "Ports 8080 and 6080 are public." >> /tmp/sahbi-port-visibility.log
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "Could not automatically make Codespaces ports public." >> /tmp/sahbi-port-visibility.log
+  fi
+) &
+
 exec npm start
