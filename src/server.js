@@ -10,7 +10,8 @@ app.use(express.json({limit:"2mb"}));
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = process.env.SAHBI_TOKEN || "";
 const PLUGIN_KEY = TOKEN ? createHash("sha256").update(`sahbi-plugin:${TOKEN}`).digest("hex") : "";
-let context, page;
+let context, page, cdpBrowser;
+let cloudTakeoverActive=false;
 const PROFILE_DIR = process.env.SAHBI_PROFILE_DIR || "/workspaces/sahbi-browser/.data/profile";
 const mcpStats={requests:0,lastMethod:null,lastAt:null,lastStatus:null};
 const takeovers=new Map();
@@ -22,6 +23,13 @@ function publicBaseUrl(){
   if(process.env.SAHBI_PUBLIC_BASE_URL) return process.env.SAHBI_PUBLIC_BASE_URL.replace(/\/$/,"");
   if(process.env.CODESPACE_NAME && process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN){
     return `https://${process.env.CODESPACE_NAME}-${PORT}.${process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}`;
+  }
+  return "";
+}
+function cloudBrowserUrl(){
+  if(process.env.SAHBI_NOVNC_URL) return process.env.SAHBI_NOVNC_URL;
+  if(process.env.CODESPACE_NAME && process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN){
+    return `https://${process.env.CODESPACE_NAME}-6080.${process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}/vnc.html?autoconnect=1&resize=remote&path=websockify`;
   }
   return "";
 }
@@ -65,22 +73,33 @@ function pluginCapabilityAuth(req,res,next){
   if(a.length!==b.length || !timingSafeEqual(a,b)) return res.status(404).json({error:"not found"});
   next();
 }
-async function browser(){
-  if(!context){
-    context=await chromium.launchPersistentContext(PROFILE_DIR,{
-      headless:true,
-      args:["--no-sandbox","--disable-dev-shm-usage"]
-    });
-    page=context.pages()[0] || await context.newPage();
+async function browser(options={}){
+  if(cloudTakeoverActive && !options.allowDuringTakeover){
+    throw new Error("Cloud takeover is active. End the takeover before resuming automation.");
   }
+  if(!context){
+    if(process.env.SAHBI_CDP_URL){
+      cdpBrowser=await chromium.connectOverCDP(process.env.SAHBI_CDP_URL);
+      context=cdpBrowser.contexts()[0];
+      if(!context) throw new Error("No Chromium context available over CDP");
+      page=context.pages().at(-1) || await context.newPage();
+    }else{
+      context=await chromium.launchPersistentContext(PROFILE_DIR,{
+        headless:true,
+        args:["--no-sandbox","--disable-dev-shm-usage"]
+      });
+      page=context.pages()[0] || await context.newPage();
+    }
+  }
+  if(!page || page.isClosed()) page=context.pages().at(-1) || await context.newPage();
   return page;
 }
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.7.0",status:"ok"}));
-app.get("/health",(_req,res)=>res.json({ok:true,version:"0.6.0",mcp:"/mcp"}));
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.8.0",status:"ok"}));
+app.get("/health",(_req,res)=>res.json({ok:true,version:"0.8.0",mcp:"/mcp"}));
 app.get("/mcp-status",auth,(_req,res)=>res.json({ok:true,version:"0.3.1",...mcpStats}));
 
 function createMcpServer(){
-  const mcp = new McpServer({name:"sahbi-browser",version:"0.5.0"});
+  const mcp = new McpServer({name:"sahbi-browser",version:"0.8.0"});
   mcp.tool("browser_open","Open a URL in Sahbi Browser",{url:z.string().url()},async({url})=>{
     const p=await browser(); await p.goto(url,{waitUntil:"domcontentloaded",timeout:30000});
     return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};
@@ -292,6 +311,22 @@ function createMcpServer(){
     })}]};
   });
 
+  mcp.tool("browser_cloud_takeover_start","Give the user direct interactive control of the same visible Chromium session through the private GitHub Codespaces noVNC port. Automation pauses until browser_cloud_takeover_end is called.",{},async()=>{
+    await browser();
+    const url=cloudBrowserUrl();
+    if(!url) throw new Error("Cloud browser URL is not configured");
+    cloudTakeoverActive=true;
+    return {content:[{type:"text",text:JSON.stringify({ok:true,url,mode:"interactive-cloud-browser",automationPaused:true})}]};
+  });
+  mcp.tool("browser_cloud_takeover_end","Return control of the visible Chromium session to automation.",{},async()=>{
+    cloudTakeoverActive=false;
+    const p=await browser({allowDuringTakeover:true});
+    return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title(),automationPaused:false})}]};
+  });
+  mcp.tool("browser_cloud_status","Report whether the interactive cloud-browser takeover is active and the current browser page.",{},async()=>{
+    const p=await browser({allowDuringTakeover:true});
+    return {content:[{type:"text",text:JSON.stringify({takeoverActive:cloudTakeoverActive,url:p.url(),title:await p.title(),mode:process.env.SAHBI_CDP_URL?"headed-cdp":"headless-fallback"})}]};
+  });
   mcp.tool("browser_takeover_start","Create a temporary private takeover link so the user can interact directly with the current browser for login, 2FA, CAPTCHA, or other sensitive steps. The link expires automatically.",{},async()=>{
     await browser();
     const token=randomBytes(24).toString("hex");
