@@ -14,7 +14,10 @@ let context, page;
 const PROFILE_DIR = process.env.SAHBI_PROFILE_DIR || "/workspaces/sahbi-browser/.data/profile";
 const mcpStats={requests:0,lastMethod:null,lastAt:null,lastStatus:null};
 const takeovers=new Map();
+const downloads=new Map();
 const TAKEOVER_TTL_MS=10*60*1000;
+const DOWNLOAD_TTL_MS=10*60*1000;
+const MAX_TRANSFER_BYTES=20*1024*1024;
 function publicBaseUrl(){
   if(process.env.SAHBI_PUBLIC_BASE_URL) return process.env.SAHBI_PUBLIC_BASE_URL.replace(/\/$/,"");
   if(process.env.CODESPACE_NAME && process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN){
@@ -30,6 +33,22 @@ function takeoverAuth(req,res,next){
     return res.status(404).send("Takeover session expired or not found.");
   }
   next();
+}
+function downloadAuth(req,res,next){
+  const id=String(req.params.token||"");
+  const item=downloads.get(id);
+  if(!item || Date.now()>item.expiresAt){
+    downloads.delete(id);
+    return res.status(404).send("Download expired or not found.");
+  }
+  req.downloadItem=item;
+  next();
+}
+function chooseLocator(p,{selector,label,text}){
+  if(selector) return p.locator(selector).first();
+  if(label) return p.getByLabel(label).first();
+  if(text) return p.getByText(text).first();
+  throw new Error("Provide selector, label, or text");
 }
 
 function auth(req,res,next){
@@ -56,8 +75,8 @@ async function browser(){
   }
   return page;
 }
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.5.0",status:"ok"}));
-app.get("/health",(_req,res)=>res.json({ok:true,version:"0.4.0",mcp:"/mcp"}));
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.6.0",status:"ok"}));
+app.get("/health",(_req,res)=>res.json({ok:true,version:"0.6.0",mcp:"/mcp"}));
 app.get("/mcp-status",auth,(_req,res)=>res.json({ok:true,version:"0.3.1",...mcpStats}));
 
 function createMcpServer(){
@@ -98,6 +117,37 @@ function createMcpServer(){
   mcp.tool("browser_screenshot","Capture the current page screenshot as base64 PNG",{fullPage:z.boolean().optional()},async({fullPage})=>{const p=await browser();const buf=await p.screenshot({type:"png",fullPage:!!fullPage});return {content:[{type:"image",data:buf.toString("base64"),mimeType:"image/png"}]};});
   mcp.tool("browser_cookies","List cookies for the current browser context",{},async()=>{await browser();const cookies=await context.cookies();return {content:[{type:"text",text:JSON.stringify(cookies.map(c=>({name:c.name,domain:c.domain,path:c.path,expires:c.expires,httpOnly:c.httpOnly,secure:c.secure,sameSite:c.sameSite})))}]};});
   mcp.tool("browser_wait","Wait for a number of milliseconds",{ms:z.number().int().min(0).max(15000)},async({ms})=>{const p=await browser();await p.waitForTimeout(ms);return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url()})}]};});
+  mcp.tool("browser_type","Type text into a field without clearing it first",{selector:z.string().optional(),label:z.string().optional(),text:z.string()},async({selector,label,text})=>{
+    const p=await browser(); const loc=chooseLocator(p,{selector,label}); await loc.type(text); return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
+  });
+  mcp.tool("browser_clear","Clear a form field",{selector:z.string().optional(),label:z.string().optional()},async({selector,label})=>{
+    const p=await browser(); const loc=chooseLocator(p,{selector,label}); await loc.clear(); return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
+  });
+  mcp.tool("browser_select","Select an option in a select element",{selector:z.string().optional(),label:z.string().optional(),value:z.string()},async({selector,label,value})=>{
+    const p=await browser(); const loc=chooseLocator(p,{selector,label}); const selected=await loc.selectOption(value); return {content:[{type:"text",text:JSON.stringify({ok:true,selected})}]};
+  });
+  mcp.tool("browser_check","Check or uncheck a checkbox/radio",{selector:z.string().optional(),label:z.string().optional(),checked:z.boolean().optional()},async({selector,label,checked})=>{
+    const p=await browser(); const loc=chooseLocator(p,{selector,label}); if(checked===false) await loc.uncheck(); else await loc.check(); return {content:[{type:"text",text:JSON.stringify({ok:true,checked:checked!==false})}]};
+  });
+  mcp.tool("browser_hover","Hover an element",{selector:z.string().optional(),text:z.string().optional()},async({selector,text})=>{
+    const p=await browser(); const loc=chooseLocator(p,{selector,text}); await loc.hover(); return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
+  });
+  mcp.tool("browser_wait_for","Wait for an element by selector or visible text",{selector:z.string().optional(),text:z.string().optional(),state:z.enum(["attached","detached","visible","hidden"]).optional(),timeoutMs:z.number().int().min(100).max(30000).optional()},async({selector,text,state,timeoutMs})=>{
+    const p=await browser(); const loc=chooseLocator(p,{selector,text}); await loc.waitFor({state:state||"visible",timeout:timeoutMs||10000}); return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
+  });
+  mcp.tool("browser_get_attribute","Read an element attribute",{selector:z.string().optional(),label:z.string().optional(),name:z.string()},async({selector,label,name})=>{
+    const p=await browser(); const loc=chooseLocator(p,{selector,label}); const value=await loc.getAttribute(name); return {content:[{type:"text",text:JSON.stringify({name,value})}]};
+  });
+  mcp.tool("browser_download_click","Click an element and capture the resulting download. Returns a private temporary download link valid for 10 minutes.",{selector:z.string().optional(),text:z.string().optional(),timeoutMs:z.number().int().min(1000).max(30000).optional()},async({selector,text,timeoutMs})=>{
+    const p=await browser(); const loc=chooseLocator(p,{selector,text});
+    const [dl]=await Promise.all([p.waitForEvent("download",{timeout:timeoutMs||15000}),loc.click()]);
+    const stream=await dl.createReadStream(); const chunks=[]; let total=0;
+    for await (const chunk of stream){ total+=chunk.length; if(total>MAX_TRANSFER_BYTES) throw new Error("Download exceeds 20 MB limit"); chunks.push(chunk); }
+    const buffer=Buffer.concat(chunks); const token=randomBytes(24).toString("hex"); const expiresAt=Date.now()+DOWNLOAD_TTL_MS;
+    const filename=dl.suggestedFilename()||"download.bin"; downloads.set(token,{buffer,filename,expiresAt});
+    const base=publicBaseUrl(); const url=(base?base:"")+`/download/${token}`;
+    return {content:[{type:"text",text:JSON.stringify({ok:true,filename,sizeBytes:buffer.length,url,expiresAt:new Date(expiresAt).toISOString(),validMinutes:10})}]};
+  });
   mcp.tool("browser_takeover_start","Create a temporary private takeover link so the user can interact directly with the current browser for login, 2FA, CAPTCHA, or other sensitive steps. The link expires automatically.",{},async()=>{
     await browser();
     const token=randomBytes(24).toString("hex");
@@ -148,6 +198,9 @@ button{cursor:pointer}.note{padding:8px 12px;font-size:13px;color:#bbb}
   <button onclick="key('Enter')">Enter</button>
   <button onclick="key('Tab')">Tab</button>
   <button onclick="key('Escape')">Esc</button>
+  <input id="file" type="file">
+  <input id="fileSelector" value='input[type="file"]' placeholder="file input selector">
+  <button onclick="uploadFile()">Upload file</button>
 </div>
 <div class="note">Temporary takeover session. Click the screenshot to focus fields/buttons, then use “Private typing” for passwords or 2FA. This page expires automatically.</div>
 <div id="wrap"><img id="screen" alt="browser screen"></div>
@@ -168,6 +221,14 @@ async function sendText(){const el=document.getElementById('text');const text=el
 async function key(k){await fetch(base+'/key',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k})});setTimeout(refresh,250);}
 async function go(){const url=document.getElementById('url').value;await fetch(base+'/navigate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url})});setTimeout(refresh,500);}
 async function back(){await fetch(base+'/back',{method:'POST'});setTimeout(refresh,400);}
+async function uploadFile(){
+ const file=document.getElementById('file').files[0]; if(!file){alert('Choose a file first');return;}
+ const selector=document.getElementById('fileSelector').value||'input[type="file"]';
+ const buf=await file.arrayBuffer();
+ const r=await fetch(base+'/upload',{method:'POST',headers:{'content-type':'application/octet-stream','x-filename':encodeURIComponent(file.name),'x-mime-type':file.type||'application/octet-stream','x-selector':selector},body:buf});
+ const j=await r.json(); if(!r.ok) alert(j.error||'Upload failed'); else alert('File attached: '+file.name);
+ setTimeout(refresh,300);
+}
 setInterval(refresh,1800);refresh();
 </script></body></html>`);
 });
@@ -178,6 +239,23 @@ app.post("/takeover/:token/type",takeoverAuth,async(req,res)=>{const p=await bro
 app.post("/takeover/:token/key",takeoverAuth,async(req,res)=>{const p=await browser();await p.keyboard.press(String(req.body.key||"Enter"));res.json({ok:true});});
 app.post("/takeover/:token/navigate",takeoverAuth,async(req,res)=>{const p=await browser();await p.goto(String(req.body.url),{waitUntil:"domcontentloaded",timeout:30000});res.json({ok:true,url:p.url(),title:await p.title()});});
 app.post("/takeover/:token/back",takeoverAuth,async(req,res)=>{const p=await browser();await p.goBack({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);res.json({ok:true,url:p.url(),title:await p.title()});});
+app.post("/takeover/:token/upload",takeoverAuth,express.raw({type:"application/octet-stream",limit:"20mb"}),async(req,res)=>{
+  try{
+    const p=await browser();
+    const filename=decodeURIComponent(String(req.headers["x-filename"]||"upload.bin"));
+    const mimeType=String(req.headers["x-mime-type"]||"application/octet-stream");
+    const selector=String(req.headers["x-selector"]||'input[type="file"]');
+    const buffer=Buffer.isBuffer(req.body)?req.body:Buffer.from(req.body||[]);
+    await p.locator(selector).first().setInputFiles({name:filename,mimeType,buffer});
+    res.json({ok:true,filename,sizeBytes:buffer.length});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.get("/download/:token",downloadAuth,(req,res)=>{
+  const item=req.downloadItem;
+  res.setHeader("Content-Type","application/octet-stream");
+  res.setHeader("Content-Disposition",`attachment; filename*=UTF-8''${encodeURIComponent(item.filename)}`);
+  res.send(item.buffer);
+});
 app.use("/api",auth);
 app.post("/api/open",async(req,res)=>{
   try{const p=await browser(); await p.goto(req.body.url,{waitUntil:"domcontentloaded",timeout:30000}); res.json({ok:true,url:p.url(),title:await p.title()});}
