@@ -3,18 +3,28 @@ import { chromium } from "playwright";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 const app = express();
 app.use(express.json({limit:"2mb"}));
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = process.env.SAHBI_TOKEN || "";
+const PLUGIN_KEY = TOKEN ? createHash("sha256").update(`sahbi-plugin:${TOKEN}`).digest("hex") : "";
 let context, page;
 const mcpStats={requests:0,lastMethod:null,lastAt:null,lastStatus:null};
 
 function auth(req,res,next){
-  if (!TOKEN) return next();
+  if (!TOKEN) return res.status(503).json({error:"server token not configured"});
   const v=req.headers.authorization||"";
   if(v!==`Bearer ${TOKEN}`) return res.status(401).json({error:"unauthorized"});
+  next();
+}
+function pluginCapabilityAuth(req,res,next){
+  if (!PLUGIN_KEY) return res.status(503).json({error:"plugin capability not configured"});
+  const supplied=String(req.params.key||"");
+  const a=Buffer.from(supplied);
+  const b=Buffer.from(PLUGIN_KEY);
+  if(a.length!==b.length || !timingSafeEqual(a,b)) return res.status(404).json({error:"not found"});
   next();
 }
 async function browser(){
@@ -27,8 +37,8 @@ async function browser(){
   }
   return page;
 }
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.3.0",status:"ok"}));
-app.get("/health",(_req,res)=>res.json({ok:true,version:"0.3.1",mcp:"/mcp"}));
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.4.0",status:"ok"}));
+app.get("/health",(_req,res)=>res.json({ok:true,version:"0.4.0",mcp:"/mcp"}));
 app.get("/mcp-status",auth,(_req,res)=>res.json({ok:true,version:"0.3.1",...mcpStats}));
 
 function createMcpServer(){
@@ -71,14 +81,16 @@ function createMcpServer(){
   mcp.tool("browser_wait","Wait for a number of milliseconds",{ms:z.number().int().min(0).max(15000)},async({ms})=>{const p=await browser();await p.waitForTimeout(ms);return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url()})}]};});
   return mcp;
 }
-app.all("/mcp",auth,async(req,res)=>{
+async function handleMcp(req,res){
   mcpStats.requests++; mcpStats.lastMethod=req.body?.method||req.method; mcpStats.lastAt=new Date().toISOString();
   const mcp=createMcpServer();
   const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});
   res.on("close",()=>{transport.close();mcp.close();});
   try{await mcp.connect(transport); await transport.handleRequest(req,res,req.body); mcpStats.lastStatus=res.statusCode;}
   catch(e){mcpStats.lastStatus=500; console.error("MCP error",e); if(!res.headersSent)res.status(500).json({error:e.message});}
-});
+}
+app.all("/mcp",auth,handleMcp);
+app.all("/plugin-mcp/:key",pluginCapabilityAuth,handleMcp);
 app.use("/api",auth);
 app.post("/api/open",async(req,res)=>{
   try{const p=await browser(); await p.goto(req.body.url,{waitUntil:"domcontentloaded",timeout:30000}); res.json({ok:true,url:p.url(),title:await p.title()});}
