@@ -66,7 +66,7 @@ function registerSecure(mcp,authContext,name,description,inputSchema,handler){
 }
 
 function createMcp(authContext){
-  const mcp=new McpServer({name:"sahbi-browser",version:"1.0.0"});
+  const mcp=new McpServer({name:"sahbi-browser",version:"1.1.0"});
 
   registerSecure(mcp,authContext,"browser_info","Get the active page URL, title, viewport, and tab count.",{},async()=>{
     const p=await browser();
@@ -240,8 +240,8 @@ async function handleMcp(req,res){
   }
 }
 
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"1.0.0",status:"ok",mcp:"/mcp"}));
-app.get("/health",(_req,res)=>res.json({ok:true,version:"1.0.0"}));
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"1.1.0",status:"ok",mcp:"/mcp"}));
+app.get("/health",(_req,res)=>res.json({ok:true,version:"1.1.0"}));
 app.all("/mcp",handleMcp);
 
 function takeover(req,res,next){
@@ -260,22 +260,37 @@ app.get("/takeover/:token",takeover,async(req,res)=>{
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sahbi Browser</title>
 <style>
-body{font-family:system-ui;background:#111;color:#eee;margin:0}#bar{position:sticky;top:0;background:#1b1b1b;padding:10px;display:flex;gap:8px;flex-wrap:wrap}
-input,button{padding:9px;border-radius:8px;border:1px solid #555;background:#222;color:#fff;font:inherit}#url{flex:1;min-width:260px}
-#wrap{padding:10px}#screen{max-width:100%;height:auto;border:1px solid #444;background:#fff;cursor:crosshair}.note{padding:8px 12px;color:#aaa;font-size:13px}
+*{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#111;color:#eee;margin:0}
+#bar{position:sticky;top:0;z-index:10;background:#171717;padding:10px;display:grid;gap:8px;border-bottom:1px solid #333}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+input,button{min-height:44px;padding:9px 11px;border-radius:10px;border:1px solid #555;background:#222;color:#fff;font:inherit}
+button{touch-action:manipulation;white-space:nowrap}button:active{transform:scale(.98)}
+#url{flex:1;min-width:180px}#text{flex:1;min-width:160px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+#wrap{padding:8px;overflow:auto;text-align:center}
+#screen{display:block;width:100%;max-width:100%;height:auto;margin:auto;border:1px solid #444;background:#fff;cursor:crosshair;touch-action:manipulation}
+.note{padding:8px 12px;color:#aaa;font-size:13px}
+@media(max-width:600px){#bar{padding:8px}.row{gap:6px}input,button{min-height:46px}#url{min-width:0;width:100%}}
 </style></head><body>
-<div id="bar"><button onclick="back()">←</button><button onclick="refresh()">↻</button><input id="url"><button onclick="go()">Go</button><input id="text" type="password" placeholder="Private typing"><button onclick="typeText()">Type</button><button onclick="key('Enter')">Enter</button><button onclick="key('Tab')">Tab</button></div>
-<div class="note">Temporary private takeover. The link expires automatically.</div><div id="wrap"><img id="screen"></div>
+<div id="bar">
+  <div class="row"><button onclick="back()">←</button><button onclick="refresh()">↻</button><input id="url" autocapitalize="none" autocomplete="off" spellcheck="false"><button onclick="go()">Go</button></div>
+  <div class="row"><input id="text" type="text" placeholder="Texte à saisir" autocapitalize="none" autocomplete="off" spellcheck="false"><button id="visibility" onclick="toggleVisibility()">🙈 Masquer</button><button onclick="typeText()">Saisir</button></div>
+  <div class="row"><button onclick="key('Enter')">Enter</button><button onclick="key('Tab')">Tab</button><button onclick="scrollPage('up')">↑</button><button onclick="scrollPage('down')">↓</button></div>
+</div>
+<div class="note">Prise en main privée temporaire. Le texte est visible pendant la saisie ; utilise “Masquer” si nécessaire. Le lien expire automatiquement.</div><div id="wrap"><img id="screen"></div>
 <script>
 const base='/takeover/'+"${req.params.token}";
 const img=document.getElementById('screen');
 async function state(){const r=await fetch(base+'/state');const j=await r.json();document.getElementById('url').value=j.url||''}
 function refresh(){img.src=base+'/screen.png?t='+Date.now();state()}
 img.onclick=async e=>{const r=img.getBoundingClientRect();const x=(e.clientX-r.left)*(img.naturalWidth/r.width);const y=(e.clientY-r.top)*(img.naturalHeight/r.height);await fetch(base+'/click',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({x,y})});setTimeout(refresh,250)}
-async function typeText(){const el=document.getElementById('text');const text=el.value;el.value='';await fetch(base+'/type',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});setTimeout(refresh,250)}
+async function typeText(){const el=document.getElementById('text');const text=el.value;if(!text)return;await fetch(base+'/type',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});el.value='';setTimeout(refresh,250)}
+function toggleVisibility(){const el=document.getElementById('text');const b=document.getElementById('visibility');const hiding=el.type==='text';el.type=hiding?'password':'text';b.textContent=hiding?'👁 Afficher':'🙈 Masquer';el.focus()}
 async function key(k){await fetch(base+'/key',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k})});setTimeout(refresh,250)}
+async function scrollPage(direction){await fetch(base+'/scroll',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({direction})});setTimeout(refresh,250)}
 async function go(){await fetch(base+'/navigate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:document.getElementById('url').value})});setTimeout(refresh,500)}
 async function back(){await fetch(base+'/back',{method:'POST'});setTimeout(refresh,400)}
+document.getElementById('text').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();typeText()}})
+document.getElementById('url').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();go()}})
 setInterval(refresh,1800);refresh();
 </script></body></html>`);
 });
@@ -285,7 +300,8 @@ app.get("/takeover/:token/screen.png",takeover,async(_req,res)=>{const p=await b
 app.post("/takeover/:token/click",takeover,async(req,res)=>{const p=await browser();await p.mouse.click(Number(req.body.x),Number(req.body.y));res.json({ok:true})});
 app.post("/takeover/:token/type",takeover,async(req,res)=>{const p=await browser();await p.keyboard.insertText(String(req.body.text||""));res.json({ok:true})});
 app.post("/takeover/:token/key",takeover,async(req,res)=>{const p=await browser();await p.keyboard.press(String(req.body.key||"Enter"));res.json({ok:true})});
+app.post("/takeover/:token/scroll",takeover,async(req,res)=>{const p=await browser();const direction=String(req.body.direction||"down");await p.evaluate(d=>scrollBy(0,d==="up"?-650:650),direction);res.json({ok:true})});
 app.post("/takeover/:token/navigate",takeover,async(req,res)=>{const p=await browser();await p.goto(String(req.body.url),{waitUntil:"domcontentloaded",timeout:30000});res.json({ok:true,url:p.url(),title:await p.title()})});
 app.post("/takeover/:token/back",takeover,async(_req,res)=>{const p=await browser();await p.goBack({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);res.json({ok:true,url:p.url(),title:await p.title()})});
 
-app.listen(PORT,"0.0.0.0",()=>console.log(`Sahbi Browser 1.0.0 listening on ${PORT}`));
+app.listen(PORT,"0.0.0.0",()=>console.log(`Sahbi Browser 1.1.0 listening on ${PORT}`));
