@@ -1,18 +1,12 @@
 # Sahbi Browser
 
-Remote Chromium/Playwright browser service for the Sahbi project.
+Private persistent browser MCP for ChatGPT.
 
-## Endpoints
-- GET /health
-- POST /api/open
-- GET /api/read
-- GET /api/snapshot
-- POST /api/click
-- POST /api/fill
+## Endpoint
+- `/mcp` — Streamable HTTP MCP
+- `/health` — health check
 
-Set `SAHBI_TOKEN` in the hosting platform and send it as `Authorization: Bearer ...` for /api routes.
+## Features
+Persistent Chromium profile, page navigation and reading, clicks/forms, tabs, screenshots, and temporary private takeover links for login/2FA/CAPTCHA.
 
-V1 uses headless Chromium. Persistent storage and MCP transport are the next steps after validating the host.
-
-
-Deployment refresh: public repository enabled for Blitz build.
+Authentication uses OAuth with PKCE. The first authorization prints a one-time bootstrap code in Railway logs; after that the user chooses a permanent PIN.

@@ -1,14 +1,13 @@
 {
   "name": "sahbi-browser",
-  "version": "0.1.0",
+  "version": "1.0.0",
+  "private": true,
   "type": "module",
-  "scripts": {
-    "start": "node src/server.js"
-  },
+  "scripts": {"start":"node src/server.js"},
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4",
     "express": "^5.1.0",
     "playwright": "1.63.0",
-    "@modelcontextprotocol/sdk": "^1.17.4",
     "zod": "^3.25.0"
   }
 }
