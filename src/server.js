@@ -37,7 +37,7 @@ function cloudBrowserUrl(){
   return "";
 }
 
-const {mcpAuth}=setupOAuth(app,{legacyToken:TOKEN,legacyPluginKey:LEGACY_PLUGIN_KEY,publicBaseUrl});
+const {authenticateRequest,oauthChallengeValue}=setupOAuth(app,{legacyToken:TOKEN,legacyPluginKey:LEGACY_PLUGIN_KEY,publicBaseUrl});
 function takeoverAuth(req,res,next){
   const id=String(req.params.token||"");
   const session=takeovers.get(id);
@@ -105,70 +105,88 @@ async function browser(options={}){
   if(!page || page.isClosed()) page=context.pages().at(-1) || await context.newPage();
   return page;
 }
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.9.0",status:"ok"}));
-app.get("/health",(_req,res)=>res.json({ok:true,version:"0.9.0",mcp:"/mcp"}));
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.9.1",status:"ok"}));
+app.get("/health",(_req,res)=>res.json({ok:true,version:"0.9.1",mcp:"/mcp"}));
 app.get("/mcp-status",auth,(_req,res)=>res.json({ok:true,version:"0.3.1",...mcpStats}));
 
-function createMcpServer(){
-  const mcp = new McpServer({name:"sahbi-browser",version:"0.9.0"});
-  mcp.tool("browser_open","Open a URL in Sahbi Browser",{url:z.string().url()},async({url})=>{
+function secureTool(mcp,authContext,name,description,inputSchema,handler){
+  return mcp.registerTool(name,{
+    description,
+    inputSchema,
+    securitySchemes:[{type:"oauth2",scopes:["browser:control"]}]
+  },async(args,extra)=>{
+    if(!authContext){
+      const challenge=oauthChallengeValue("invalid_token","Sign in to Sahbi Browser to continue");
+      return {
+        isError:true,
+        content:[{type:"text",text:"Authentication required: connect Sahbi Browser to continue."}],
+        _meta:{"mcp/www_authenticate":[challenge]}
+      };
+    }
+    return handler(args,extra);
+  });
+}
+
+function createMcpServer(authContext){
+  const mcp = new McpServer({name:"sahbi-browser",version:"0.9.1"});
+  secureTool(mcp,authContext,"browser_open","Open a URL in Sahbi Browser",{url:z.string().url()},async({url})=>{
     const p=await browser(); await p.goto(url,{waitUntil:"domcontentloaded",timeout:30000});
     return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};
   });
-  mcp.tool("browser_read","Read visible text from the current page",{},async()=>{
+  secureTool(mcp,authContext,"browser_read","Read visible text from the current page",{},async()=>{
     const p=await browser(); const body=(await p.locator("body").innerText()).slice(0,50000);
     return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title(),text:body})}]};
   });
-  mcp.tool("browser_click","Click the first element matching visible text",{text:z.string(),exact:z.boolean().optional()},async({text,exact})=>{
+  secureTool(mcp,authContext,"browser_click","Click the first element matching visible text",{text:z.string(),exact:z.boolean().optional()},async({text,exact})=>{
     const p=await browser(); await p.getByText(text,{exact:!!exact}).first().click();
     return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title()})}]};
   });
-  mcp.tool("browser_fill","Fill a form field by label",{label:z.string(),value:z.string()},async({label,value})=>{
+  secureTool(mcp,authContext,"browser_fill","Fill a form field by label",{label:z.string(),value:z.string()},async({label,value})=>{
     const p=await browser(); await p.getByLabel(label).first().fill(value);
     return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
   });
-  mcp.tool("browser_snapshot","List interactive elements on the current page",{},async()=>{
+  secureTool(mcp,authContext,"browser_snapshot","List interactive elements on the current page",{},async()=>{
     const p=await browser();
     const items=await p.locator("a,button,input,textarea,select").evaluateAll(els=>els.slice(0,300).map((e,i)=>({i,tag:e.tagName.toLowerCase(),text:(e.innerText||e.getAttribute("aria-label")||e.getAttribute("placeholder")||"").trim(),type:e.getAttribute("type")})));
     return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title(),items})}]};
   });
-  mcp.tool("browser_info","Get current page URL, title and viewport",{},async()=>{const p=await browser();return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title(),viewport:await p.evaluate(()=>({width:innerWidth,height:innerHeight}))})}]};});
-  mcp.tool("browser_back","Go back in browser history",{},async()=>{const p=await browser();await p.goBack({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};});
-  mcp.tool("browser_forward","Go forward in browser history",{},async()=>{const p=await browser();await p.goForward({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};});
-  mcp.tool("browser_new_tab","Open a new tab",{url:z.string().url().optional()},async({url})=>{const p=await context.newPage();page=p;if(url)await p.goto(url,{waitUntil:"domcontentloaded",timeout:30000});return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};});
-  mcp.tool("browser_tabs","List open tabs",{},async()=>{await browser();const pages=context.pages();const tabs=[];for(let i=0;i<pages.length;i++)tabs.push({index:i,url:pages[i].url(),title:await pages[i].title()});return {content:[{type:"text",text:JSON.stringify(tabs)}]};});
-  mcp.tool("browser_switch_tab","Switch active tab",{index:z.number().int().nonnegative()},async({index})=>{await browser();const pages=context.pages();if(!pages[index])throw new Error("Tab not found");page=pages[index];await page.bringToFront();return {content:[{type:"text",text:JSON.stringify({index,url:page.url(),title:await page.title()})}]};});
-  mcp.tool("browser_close_tab","Close a tab",{index:z.number().int().nonnegative().optional()},async({index})=>{await browser();const pages=context.pages();const target=index===undefined?page:pages[index];if(!target)throw new Error("Tab not found");await target.close();page=context.pages().at(-1)||await context.newPage();return {content:[{type:"text",text:JSON.stringify({ok:true,url:page.url()})}]};});
-  mcp.tool("browser_press","Press a keyboard key",{key:z.string()},async({key})=>{const p=await browser();await p.keyboard.press(key);return {content:[{type:"text",text:JSON.stringify({ok:true})}]};});
-  mcp.tool("browser_scroll","Scroll page",{direction:z.enum(["up","down"]),pixels:z.number().int().positive().max(10000).optional()},async({direction,pixels})=>{const p=await browser();const n=(pixels||700)*(direction==="up"?-1:1);await p.evaluate(y=>scrollBy(0,y),n);return {content:[{type:"text",text:JSON.stringify({ok:true,scrollY:await p.evaluate(()=>scrollY)})}]};});
-  mcp.tool("browser_click_selector","Click an element using a CSS selector",{selector:z.string()},async({selector})=>{const p=await browser();await p.locator(selector).first().click();return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title()})}]};});
-  mcp.tool("browser_fill_selector","Fill a field using a CSS selector",{selector:z.string(),value:z.string()},async({selector,value})=>{const p=await browser();await p.locator(selector).first().fill(value);return {content:[{type:"text",text:JSON.stringify({ok:true})}]};});
-  mcp.tool("browser_click_role","Click by accessibility role and name",{role:z.string(),name:z.string()},async({role,name})=>{const p=await browser();await p.getByRole(role,{name}).first().click();return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title()})}]};});
-  mcp.tool("browser_screenshot","Capture the current page screenshot as base64 PNG",{fullPage:z.boolean().optional()},async({fullPage})=>{const p=await browser();const buf=await p.screenshot({type:"png",fullPage:!!fullPage});return {content:[{type:"image",data:buf.toString("base64"),mimeType:"image/png"}]};});
-  mcp.tool("browser_cookies","List cookies for the current browser context",{},async()=>{await browser();const cookies=await context.cookies();return {content:[{type:"text",text:JSON.stringify(cookies.map(c=>({name:c.name,domain:c.domain,path:c.path,expires:c.expires,httpOnly:c.httpOnly,secure:c.secure,sameSite:c.sameSite})))}]};});
-  mcp.tool("browser_wait","Wait for a number of milliseconds",{ms:z.number().int().min(0).max(15000)},async({ms})=>{const p=await browser();await p.waitForTimeout(ms);return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url()})}]};});
-  mcp.tool("browser_type","Type text into a field without clearing it first",{selector:z.string().optional(),label:z.string().optional(),text:z.string()},async({selector,label,text})=>{
+  secureTool(mcp,authContext,"browser_info","Get current page URL, title and viewport",{},async()=>{const p=await browser();return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title(),viewport:await p.evaluate(()=>({width:innerWidth,height:innerHeight}))})}]};});
+  secureTool(mcp,authContext,"browser_back","Go back in browser history",{},async()=>{const p=await browser();await p.goBack({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};});
+  secureTool(mcp,authContext,"browser_forward","Go forward in browser history",{},async()=>{const p=await browser();await p.goForward({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};});
+  secureTool(mcp,authContext,"browser_new_tab","Open a new tab",{url:z.string().url().optional()},async({url})=>{const p=await context.newPage();page=p;if(url)await p.goto(url,{waitUntil:"domcontentloaded",timeout:30000});return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};});
+  secureTool(mcp,authContext,"browser_tabs","List open tabs",{},async()=>{await browser();const pages=context.pages();const tabs=[];for(let i=0;i<pages.length;i++)tabs.push({index:i,url:pages[i].url(),title:await pages[i].title()});return {content:[{type:"text",text:JSON.stringify(tabs)}]};});
+  secureTool(mcp,authContext,"browser_switch_tab","Switch active tab",{index:z.number().int().nonnegative()},async({index})=>{await browser();const pages=context.pages();if(!pages[index])throw new Error("Tab not found");page=pages[index];await page.bringToFront();return {content:[{type:"text",text:JSON.stringify({index,url:page.url(),title:await page.title()})}]};});
+  secureTool(mcp,authContext,"browser_close_tab","Close a tab",{index:z.number().int().nonnegative().optional()},async({index})=>{await browser();const pages=context.pages();const target=index===undefined?page:pages[index];if(!target)throw new Error("Tab not found");await target.close();page=context.pages().at(-1)||await context.newPage();return {content:[{type:"text",text:JSON.stringify({ok:true,url:page.url()})}]};});
+  secureTool(mcp,authContext,"browser_press","Press a keyboard key",{key:z.string()},async({key})=>{const p=await browser();await p.keyboard.press(key);return {content:[{type:"text",text:JSON.stringify({ok:true})}]};});
+  secureTool(mcp,authContext,"browser_scroll","Scroll page",{direction:z.enum(["up","down"]),pixels:z.number().int().positive().max(10000).optional()},async({direction,pixels})=>{const p=await browser();const n=(pixels||700)*(direction==="up"?-1:1);await p.evaluate(y=>scrollBy(0,y),n);return {content:[{type:"text",text:JSON.stringify({ok:true,scrollY:await p.evaluate(()=>scrollY)})}]};});
+  secureTool(mcp,authContext,"browser_click_selector","Click an element using a CSS selector",{selector:z.string()},async({selector})=>{const p=await browser();await p.locator(selector).first().click();return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title()})}]};});
+  secureTool(mcp,authContext,"browser_fill_selector","Fill a field using a CSS selector",{selector:z.string(),value:z.string()},async({selector,value})=>{const p=await browser();await p.locator(selector).first().fill(value);return {content:[{type:"text",text:JSON.stringify({ok:true})}]};});
+  secureTool(mcp,authContext,"browser_click_role","Click by accessibility role and name",{role:z.string(),name:z.string()},async({role,name})=>{const p=await browser();await p.getByRole(role,{name}).first().click();return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title()})}]};});
+  secureTool(mcp,authContext,"browser_screenshot","Capture the current page screenshot as base64 PNG",{fullPage:z.boolean().optional()},async({fullPage})=>{const p=await browser();const buf=await p.screenshot({type:"png",fullPage:!!fullPage});return {content:[{type:"image",data:buf.toString("base64"),mimeType:"image/png"}]};});
+  secureTool(mcp,authContext,"browser_cookies","List cookies for the current browser context",{},async()=>{await browser();const cookies=await context.cookies();return {content:[{type:"text",text:JSON.stringify(cookies.map(c=>({name:c.name,domain:c.domain,path:c.path,expires:c.expires,httpOnly:c.httpOnly,secure:c.secure,sameSite:c.sameSite})))}]};});
+  secureTool(mcp,authContext,"browser_wait","Wait for a number of milliseconds",{ms:z.number().int().min(0).max(15000)},async({ms})=>{const p=await browser();await p.waitForTimeout(ms);return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url()})}]};});
+  secureTool(mcp,authContext,"browser_type","Type text into a field without clearing it first",{selector:z.string().optional(),label:z.string().optional(),text:z.string()},async({selector,label,text})=>{
     const p=await browser(); const loc=chooseLocator(p,{selector,label}); await loc.type(text); return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
   });
-  mcp.tool("browser_clear","Clear a form field",{selector:z.string().optional(),label:z.string().optional()},async({selector,label})=>{
+  secureTool(mcp,authContext,"browser_clear","Clear a form field",{selector:z.string().optional(),label:z.string().optional()},async({selector,label})=>{
     const p=await browser(); const loc=chooseLocator(p,{selector,label}); await loc.clear(); return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
   });
-  mcp.tool("browser_select","Select an option in a select element",{selector:z.string().optional(),label:z.string().optional(),value:z.string()},async({selector,label,value})=>{
+  secureTool(mcp,authContext,"browser_select","Select an option in a select element",{selector:z.string().optional(),label:z.string().optional(),value:z.string()},async({selector,label,value})=>{
     const p=await browser(); const loc=chooseLocator(p,{selector,label}); const selected=await loc.selectOption(value); return {content:[{type:"text",text:JSON.stringify({ok:true,selected})}]};
   });
-  mcp.tool("browser_check","Check or uncheck a checkbox/radio",{selector:z.string().optional(),label:z.string().optional(),checked:z.boolean().optional()},async({selector,label,checked})=>{
+  secureTool(mcp,authContext,"browser_check","Check or uncheck a checkbox/radio",{selector:z.string().optional(),label:z.string().optional(),checked:z.boolean().optional()},async({selector,label,checked})=>{
     const p=await browser(); const loc=chooseLocator(p,{selector,label}); if(checked===false) await loc.uncheck(); else await loc.check(); return {content:[{type:"text",text:JSON.stringify({ok:true,checked:checked!==false})}]};
   });
-  mcp.tool("browser_hover","Hover an element",{selector:z.string().optional(),text:z.string().optional()},async({selector,text})=>{
+  secureTool(mcp,authContext,"browser_hover","Hover an element",{selector:z.string().optional(),text:z.string().optional()},async({selector,text})=>{
     const p=await browser(); const loc=chooseLocator(p,{selector,text}); await loc.hover(); return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
   });
-  mcp.tool("browser_wait_for","Wait for an element by selector or visible text",{selector:z.string().optional(),text:z.string().optional(),state:z.enum(["attached","detached","visible","hidden"]).optional(),timeoutMs:z.number().int().min(100).max(30000).optional()},async({selector,text,state,timeoutMs})=>{
+  secureTool(mcp,authContext,"browser_wait_for","Wait for an element by selector or visible text",{selector:z.string().optional(),text:z.string().optional(),state:z.enum(["attached","detached","visible","hidden"]).optional(),timeoutMs:z.number().int().min(100).max(30000).optional()},async({selector,text,state,timeoutMs})=>{
     const p=await browser(); const loc=chooseLocator(p,{selector,text}); await loc.waitFor({state:state||"visible",timeout:timeoutMs||10000}); return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
   });
-  mcp.tool("browser_get_attribute","Read an element attribute",{selector:z.string().optional(),label:z.string().optional(),name:z.string()},async({selector,label,name})=>{
+  secureTool(mcp,authContext,"browser_get_attribute","Read an element attribute",{selector:z.string().optional(),label:z.string().optional(),name:z.string()},async({selector,label,name})=>{
     const p=await browser(); const loc=chooseLocator(p,{selector,label}); const value=await loc.getAttribute(name); return {content:[{type:"text",text:JSON.stringify({name,value})}]};
   });
-  mcp.tool("browser_download_click","Click an element and capture the resulting download. Returns a private temporary download link valid for 10 minutes.",{selector:z.string().optional(),text:z.string().optional(),timeoutMs:z.number().int().min(1000).max(30000).optional()},async({selector,text,timeoutMs})=>{
+  secureTool(mcp,authContext,"browser_download_click","Click an element and capture the resulting download. Returns a private temporary download link valid for 10 minutes.",{selector:z.string().optional(),text:z.string().optional(),timeoutMs:z.number().int().min(1000).max(30000).optional()},async({selector,text,timeoutMs})=>{
     const p=await browser(); const loc=chooseLocator(p,{selector,text});
     const [dl]=await Promise.all([p.waitForEvent("download",{timeout:timeoutMs||15000}),loc.click()]);
     const stream=await dl.createReadStream(); const chunks=[]; let total=0;
@@ -178,7 +196,7 @@ function createMcpServer(){
     const base=publicBaseUrl(); const url=(base?base:"")+`/download/${token}`;
     return {content:[{type:"text",text:JSON.stringify({ok:true,filename,sizeBytes:buffer.length,url,expiresAt:new Date(expiresAt).toISOString(),validMinutes:10})}]};
   });
-  mcp.tool("browser_form_inspect","Inspect visible form fields, labels, types and validation state",{},async()=>{
+  secureTool(mcp,authContext,"browser_form_inspect","Inspect visible form fields, labels, types and validation state",{},async()=>{
     const p=await browser();
     const fields=await p.locator("input,textarea,select,button").evaluateAll(els=>els.map((e,index)=>{
       const tag=e.tagName.toLowerCase();
@@ -207,7 +225,7 @@ function createMcpServer(){
     return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title(),fields})}]};
   });
 
-  mcp.tool("browser_form_fill","Fill several form fields intelligently in one call",{
+  secureTool(mcp,authContext,"browser_form_fill","Fill several form fields intelligently in one call",{
     fields:z.array(z.object({
       selector:z.string().optional(),
       label:z.string().optional(),
@@ -249,7 +267,7 @@ function createMcpServer(){
     return {content:[{type:"text",text:JSON.stringify({ok:true,results})}]};
   });
 
-  mcp.tool("browser_validation_errors","Read browser validation errors and visible error messages",{},async()=>{
+  secureTool(mcp,authContext,"browser_validation_errors","Read browser validation errors and visible error messages",{},async()=>{
     const p=await browser();
     const invalid=await p.locator("input:invalid,textarea:invalid,select:invalid").evaluateAll(els=>els.map(e=>({
       name:e.getAttribute("name"),
@@ -264,7 +282,7 @@ function createMcpServer(){
     return {content:[{type:"text",text:JSON.stringify({invalid,visibleErrors})}]};
   });
 
-  mcp.tool("browser_popup_wait","Wait for a popup/new window, optionally triggered by clicking an element",{
+  secureTool(mcp,authContext,"browser_popup_wait","Wait for a popup/new window, optionally triggered by clicking an element",{
     selector:z.string().optional(),
     text:z.string().optional(),
     timeoutMs:z.number().int().min(500).max(30000).optional()
@@ -289,7 +307,7 @@ function createMcpServer(){
     })}]};
   });
 
-  mcp.tool("browser_downloads","List temporary downloads currently available",{},async()=>{
+  secureTool(mcp,authContext,"browser_downloads","List temporary downloads currently available",{},async()=>{
     const now=Date.now();
     const base=publicBaseUrl();
     const items=[];
@@ -305,7 +323,7 @@ function createMcpServer(){
     return {content:[{type:"text",text:JSON.stringify({downloads:items})}]};
   });
 
-  mcp.tool("browser_resume_after_takeover","Resume automation after the user completed login/2FA/CAPTCHA",{
+  secureTool(mcp,authContext,"browser_resume_after_takeover","Resume automation after the user completed login/2FA/CAPTCHA",{
     revokeActive:z.boolean().optional()
   },async({revokeActive})=>{
     const p=await browser();
@@ -322,23 +340,23 @@ function createMcpServer(){
     })}]};
   });
 
-  mcp.tool("browser_cloud_takeover_start","Give the user direct interactive control of the same visible Chromium session through the private GitHub Codespaces noVNC port. Automation pauses until browser_cloud_takeover_end is called.",{},async()=>{
+  secureTool(mcp,authContext,"browser_cloud_takeover_start","Give the user direct interactive control of the same visible Chromium session through the private GitHub Codespaces noVNC port. Automation pauses until browser_cloud_takeover_end is called.",{},async()=>{
     await browser();
     const url=cloudBrowserUrl();
     if(!url) throw new Error("Cloud browser URL is not configured");
     cloudTakeoverActive=true;
     return {content:[{type:"text",text:JSON.stringify({ok:true,url,mode:"interactive-cloud-browser",automationPaused:true})}]};
   });
-  mcp.tool("browser_cloud_takeover_end","Return control of the visible Chromium session to automation.",{},async()=>{
+  secureTool(mcp,authContext,"browser_cloud_takeover_end","Return control of the visible Chromium session to automation.",{},async()=>{
     cloudTakeoverActive=false;
     const p=await browser({allowDuringTakeover:true});
     return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title(),automationPaused:false})}]};
   });
-  mcp.tool("browser_cloud_status","Report whether the interactive cloud-browser takeover is active and the current browser page.",{},async()=>{
+  secureTool(mcp,authContext,"browser_cloud_status","Report whether the interactive cloud-browser takeover is active and the current browser page.",{},async()=>{
     const p=await browser({allowDuringTakeover:true});
     return {content:[{type:"text",text:JSON.stringify({takeoverActive:cloudTakeoverActive,url:p.url(),title:await p.title(),mode:process.env.SAHBI_CDP_URL?"headed-cdp":"headless-fallback"})}]};
   });
-  mcp.tool("browser_takeover_start","Create a temporary private takeover link so the user can interact directly with the current browser for login, 2FA, CAPTCHA, or other sensitive steps. The link expires automatically.",{},async()=>{
+  secureTool(mcp,authContext,"browser_takeover_start","Create a temporary private takeover link so the user can interact directly with the current browser for login, 2FA, CAPTCHA, or other sensitive steps. The link expires automatically.",{},async()=>{
     await browser();
     const token=randomBytes(24).toString("hex");
     const expiresAt=Date.now()+TAKEOVER_TTL_MS;
@@ -347,7 +365,7 @@ function createMcpServer(){
     const path=`/takeover/${token}`;
     return {content:[{type:"text",text:JSON.stringify({ok:true,url:base?base+path:path,expiresAt:new Date(expiresAt).toISOString(),validMinutes:10})}]};
   });
-  mcp.tool("browser_takeover_end","Immediately revoke all active takeover links",{},async()=>{
+  secureTool(mcp,authContext,"browser_takeover_end","Immediately revoke all active takeover links",{},async()=>{
     takeovers.clear();
     return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
   });
@@ -355,13 +373,14 @@ function createMcpServer(){
 }
 async function handleMcp(req,res){
   mcpStats.requests++; mcpStats.lastMethod=req.body?.method||req.method; mcpStats.lastAt=new Date().toISOString();
-  const mcp=createMcpServer();
+  const authContext=authenticateRequest(req);
+  const mcp=createMcpServer(authContext);
   const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});
   res.on("close",()=>{transport.close();mcp.close();});
   try{await mcp.connect(transport); await transport.handleRequest(req,res,req.body); mcpStats.lastStatus=res.statusCode;}
   catch(e){mcpStats.lastStatus=500; console.error("MCP error",e); if(!res.headersSent)res.status(500).json({error:e.message});}
 }
-app.all("/mcp",mcpAuth,handleMcp);
+app.all("/mcp",handleMcp);
 app.all("/plugin-mcp/:key",pluginCapabilityAuth,handleMcp);
 
 app.get("/takeover/:token",takeoverAuth,async(req,res)=>{
