@@ -27,7 +27,15 @@ nohup fluxbox > /tmp/sahbi-fluxbox.log 2>&1 &
 nohup "$CHROME"   --remote-debugging-address=127.0.0.1   --remote-debugging-port=9222   --user-data-dir="/workspaces/sahbi-browser/.data/profile"   --no-sandbox   --disable-dev-shm-usage   --no-first-run   --no-default-browser-check   --window-size=1440,900   about:blank > /tmp/sahbi-chromium.log 2>&1 &
 
 nohup x11vnc -display :99 -forever -shared -nopw -rfbport 5900 -localhost -quiet > /tmp/sahbi-x11vnc.log 2>&1 &
-nohup websockify --web=/usr/share/novnc/ 6080 127.0.0.1:5900 > /tmp/sahbi-novnc.log 2>&1 &
+WEBSOCKIFY_BIN="$(command -v websockify || true)"
+if [ -z "$WEBSOCKIFY_BIN" ] && [ -x /usr/bin/websockify ]; then
+  WEBSOCKIFY_BIN=/usr/bin/websockify
+fi
+if [ -z "$WEBSOCKIFY_BIN" ]; then
+  echo "websockify is missing. Run: sudo apt-get install -y websockify python3-websockify" >&2
+  exit 1
+fi
+nohup "$WEBSOCKIFY_BIN" --web=/usr/share/novnc/ 6080 127.0.0.1:5900 > /tmp/sahbi-novnc.log 2>&1 &
 
 for i in $(seq 1 30); do
   if curl -fsS http://127.0.0.1:9222/json/version >/dev/null 2>&1; then
