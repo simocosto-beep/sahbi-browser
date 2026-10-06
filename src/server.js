@@ -12,7 +12,7 @@ const TOKEN = process.env.SAHBI_TOKEN || "";
 const PLUGIN_KEY = TOKEN ? createHash("sha256").update(`sahbi-plugin:${TOKEN}`).digest("hex") : "";
 let context, page, cdpBrowser;
 let cloudTakeoverActive=false;
-const PROFILE_DIR = process.env.SAHBI_PROFILE_DIR || "/data/profile";
+const PROFILE_DIR = process.env.SAHBI_PROFILE_DIR || (process.env.RAILWAY_ENVIRONMENT ? "/data/profile" : "/workspaces/sahbi-browser/.data/profile");
 const mcpStats={requests:0,lastMethod:null,lastAt:null,lastStatus:null};
 const takeovers=new Map();
 const downloads=new Map();
