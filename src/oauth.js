@@ -103,11 +103,17 @@ export function setupOAuth(app, options={}) {
     if(!tokenScopes.includes("browser:control")) return null;
     return rec;
   }
-  function mcpAuth(req,res,next){
-    const h=String(req.headers.authorization||"");
+  function authenticateRequest(req){
+    const h=String(req?.headers?.authorization||"");
     const bearer=h.startsWith("Bearer ") ? h.slice(7) : "";
-    if(legacyOk(bearer)) return next();
-    const rec=accessRecord(bearer);
+    if(legacyOk(bearer)) return {kind:"legacy",scope:"browser:control"};
+    return accessRecord(bearer);
+  }
+  function oauthChallengeValue(error="invalid_token",description="Authentication required"){
+    return 'Bearer resource_metadata="'+issuer()+'/.well-known/oauth-protected-resource", scope="browser:control", error="'+error+'", error_description="'+String(description).replace(/"/g,"'")+'"';
+  }
+  function mcpAuth(req,res,next){
+    const rec=authenticateRequest(req);
     if(!rec) return challenge(res);
     req.oauth=rec;
     next();
@@ -306,5 +312,5 @@ export function setupOAuth(app, options={}) {
     return res.status(400).json({error:"unsupported_grant_type"});
   });
 
-  return {mcpAuth};
+  return {mcpAuth,authenticateRequest,oauthChallengeValue};
 }
