@@ -2,17 +2,23 @@
   "name": "Sahbi Browser",
   "image": "mcr.microsoft.com/playwright:v1.63.0-noble",
   "forwardPorts": [
-    8080
+    8080,
+    6080
   ],
   "portsAttributes": {
+    "6080": {
+      "label": "Sahbi Browser Cloud UI",
+      "onAutoForward": "notify",
+      "visibility": "private"
+    },
     "8080": {
       "label": "Sahbi Browser MCP",
       "onAutoForward": "notify",
       "visibility": "public"
     }
   },
-  "postCreateCommand": "npm install",
-  "postStartCommand": "nohup npm start > /tmp/sahbi-browser.log 2>&1 &",
+  "postCreateCommand": "npm install && bash scripts/install-cloud-browser.sh",
+  "postStartCommand": "nohup bash scripts/start-cloud-browser.sh > /tmp/sahbi-cloud.log 2>&1 &",
   "remoteEnv": {
     "PORT": "8080"
   }
