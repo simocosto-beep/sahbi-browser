@@ -3,7 +3,7 @@ import { chromium } from "playwright";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual, randomBytes } from "node:crypto";
 
 const app = express();
 app.use(express.json({limit:"2mb"}));
@@ -13,6 +13,24 @@ const PLUGIN_KEY = TOKEN ? createHash("sha256").update(`sahbi-plugin:${TOKEN}`).
 let context, page;
 const PROFILE_DIR = process.env.SAHBI_PROFILE_DIR || "/workspaces/sahbi-browser/.data/profile";
 const mcpStats={requests:0,lastMethod:null,lastAt:null,lastStatus:null};
+const takeovers=new Map();
+const TAKEOVER_TTL_MS=10*60*1000;
+function publicBaseUrl(){
+  if(process.env.SAHBI_PUBLIC_BASE_URL) return process.env.SAHBI_PUBLIC_BASE_URL.replace(/\/$/,"");
+  if(process.env.CODESPACE_NAME && process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN){
+    return `https://${process.env.CODESPACE_NAME}-${PORT}.${process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}`;
+  }
+  return "";
+}
+function takeoverAuth(req,res,next){
+  const id=String(req.params.token||"");
+  const session=takeovers.get(id);
+  if(!session || Date.now()>session.expiresAt){
+    takeovers.delete(id);
+    return res.status(404).send("Takeover session expired or not found.");
+  }
+  next();
+}
 
 function auth(req,res,next){
   if (!TOKEN) return res.status(503).json({error:"server token not configured"});
@@ -38,12 +56,12 @@ async function browser(){
   }
   return page;
 }
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.4.0",status:"ok"}));
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.5.0",status:"ok"}));
 app.get("/health",(_req,res)=>res.json({ok:true,version:"0.4.0",mcp:"/mcp"}));
 app.get("/mcp-status",auth,(_req,res)=>res.json({ok:true,version:"0.3.1",...mcpStats}));
 
 function createMcpServer(){
-  const mcp = new McpServer({name:"sahbi-browser",version:"0.3.0"});
+  const mcp = new McpServer({name:"sahbi-browser",version:"0.5.0"});
   mcp.tool("browser_open","Open a URL in Sahbi Browser",{url:z.string().url()},async({url})=>{
     const p=await browser(); await p.goto(url,{waitUntil:"domcontentloaded",timeout:30000});
     return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};
@@ -80,6 +98,19 @@ function createMcpServer(){
   mcp.tool("browser_screenshot","Capture the current page screenshot as base64 PNG",{fullPage:z.boolean().optional()},async({fullPage})=>{const p=await browser();const buf=await p.screenshot({type:"png",fullPage:!!fullPage});return {content:[{type:"image",data:buf.toString("base64"),mimeType:"image/png"}]};});
   mcp.tool("browser_cookies","List cookies for the current browser context",{},async()=>{await browser();const cookies=await context.cookies();return {content:[{type:"text",text:JSON.stringify(cookies.map(c=>({name:c.name,domain:c.domain,path:c.path,expires:c.expires,httpOnly:c.httpOnly,secure:c.secure,sameSite:c.sameSite})))}]};});
   mcp.tool("browser_wait","Wait for a number of milliseconds",{ms:z.number().int().min(0).max(15000)},async({ms})=>{const p=await browser();await p.waitForTimeout(ms);return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url()})}]};});
+  mcp.tool("browser_takeover_start","Create a temporary private takeover link so the user can interact directly with the current browser for login, 2FA, CAPTCHA, or other sensitive steps. The link expires automatically.",{},async()=>{
+    await browser();
+    const token=randomBytes(24).toString("hex");
+    const expiresAt=Date.now()+TAKEOVER_TTL_MS;
+    takeovers.set(token,{expiresAt});
+    const base=publicBaseUrl();
+    const path=`/takeover/${token}`;
+    return {content:[{type:"text",text:JSON.stringify({ok:true,url:base?base+path:path,expiresAt:new Date(expiresAt).toISOString(),validMinutes:10})}]};
+  });
+  mcp.tool("browser_takeover_end","Immediately revoke all active takeover links",{},async()=>{
+    takeovers.clear();
+    return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
+  });
   return mcp;
 }
 async function handleMcp(req,res){
@@ -92,6 +123,61 @@ async function handleMcp(req,res){
 }
 app.all("/mcp",auth,handleMcp);
 app.all("/plugin-mcp/:key",pluginCapabilityAuth,handleMcp);
+
+app.get("/takeover/:token",takeoverAuth,async(req,res)=>{
+  await browser();
+  res.type("html").send(`<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sahbi Browser Takeover</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;background:#111;color:#eee}
+#bar{position:sticky;top:0;z-index:5;background:#1b1b1b;padding:10px;display:flex;gap:8px;flex-wrap:wrap}
+input,button{font:inherit;padding:9px;border-radius:8px;border:1px solid #555;background:#222;color:#fff}
+#url{flex:1;min-width:260px}.secret{min-width:220px}
+button{cursor:pointer}.note{padding:8px 12px;font-size:13px;color:#bbb}
+#wrap{padding:10px}#screen{display:block;max-width:100%;height:auto;border:1px solid #444;background:#fff;cursor:crosshair}
+</style></head>
+<body>
+<div id="bar">
+  <button onclick="back()">←</button>
+  <button onclick="refresh()">↻</button>
+  <input id="url" placeholder="https://example.com">
+  <button onclick="go()">Go</button>
+  <input id="text" class="secret" type="password" autocomplete="off" placeholder="Private typing (password/2FA)">
+  <button onclick="sendText()">Type</button>
+  <button onclick="key('Enter')">Enter</button>
+  <button onclick="key('Tab')">Tab</button>
+  <button onclick="key('Escape')">Esc</button>
+</div>
+<div class="note">Temporary takeover session. Click the screenshot to focus fields/buttons, then use “Private typing” for passwords or 2FA. This page expires automatically.</div>
+<div id="wrap"><img id="screen" alt="browser screen"></div>
+<script>
+const token=${JSON.stringify(req.params.token)};
+const base='/takeover/'+token;
+const img=document.getElementById('screen');
+async function state(){try{const r=await fetch(base+'/state');const j=await r.json();document.getElementById('url').value=j.url||'';}catch{}}
+function refresh(){img.src=base+'/screen.png?t='+Date.now();state();}
+img.addEventListener('click',async e=>{
+ const r=img.getBoundingClientRect();
+ const x=(e.clientX-r.left)*(img.naturalWidth/r.width);
+ const y=(e.clientY-r.top)*(img.naturalHeight/r.height);
+ await fetch(base+'/click',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({x,y})});
+ setTimeout(refresh,250);
+});
+async function sendText(){const el=document.getElementById('text');const text=el.value;el.value='';await fetch(base+'/type',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});setTimeout(refresh,250);}
+async function key(k){await fetch(base+'/key',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k})});setTimeout(refresh,250);}
+async function go(){const url=document.getElementById('url').value;await fetch(base+'/navigate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url})});setTimeout(refresh,500);}
+async function back(){await fetch(base+'/back',{method:'POST'});setTimeout(refresh,400);}
+setInterval(refresh,1800);refresh();
+</script></body></html>`);
+});
+app.get("/takeover/:token/state",takeoverAuth,async(req,res)=>{const p=await browser();res.json({url:p.url(),title:await p.title()});});
+app.get("/takeover/:token/screen.png",takeoverAuth,async(req,res)=>{const p=await browser();const png=await p.screenshot({type:"png"});res.type("png").send(png);});
+app.post("/takeover/:token/click",takeoverAuth,async(req,res)=>{const p=await browser();await p.mouse.click(Number(req.body.x),Number(req.body.y));res.json({ok:true});});
+app.post("/takeover/:token/type",takeoverAuth,async(req,res)=>{const p=await browser();await p.keyboard.insertText(String(req.body.text??""));res.json({ok:true});});
+app.post("/takeover/:token/key",takeoverAuth,async(req,res)=>{const p=await browser();await p.keyboard.press(String(req.body.key||"Enter"));res.json({ok:true});});
+app.post("/takeover/:token/navigate",takeoverAuth,async(req,res)=>{const p=await browser();await p.goto(String(req.body.url),{waitUntil:"domcontentloaded",timeout:30000});res.json({ok:true,url:p.url(),title:await p.title()});});
+app.post("/takeover/:token/back",takeoverAuth,async(req,res)=>{const p=await browser();await p.goBack({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);res.json({ok:true,url:p.url(),title:await p.title()});});
 app.use("/api",auth);
 app.post("/api/open",async(req,res)=>{
   try{const p=await browser(); await p.goto(req.body.url,{waitUntil:"domcontentloaded",timeout:30000}); res.json({ok:true,url:p.url(),title:await p.title()});}
