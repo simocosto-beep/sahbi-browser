@@ -75,7 +75,7 @@ async function browser(){
   }
   return page;
 }
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.6.0",status:"ok"}));
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.7.0",status:"ok"}));
 app.get("/health",(_req,res)=>res.json({ok:true,version:"0.6.0",mcp:"/mcp"}));
 app.get("/mcp-status",auth,(_req,res)=>res.json({ok:true,version:"0.3.1",...mcpStats}));
 
@@ -148,6 +148,150 @@ function createMcpServer(){
     const base=publicBaseUrl(); const url=(base?base:"")+`/download/${token}`;
     return {content:[{type:"text",text:JSON.stringify({ok:true,filename,sizeBytes:buffer.length,url,expiresAt:new Date(expiresAt).toISOString(),validMinutes:10})}]};
   });
+  mcp.tool("browser_form_inspect","Inspect visible form fields, labels, types and validation state",{},async()=>{
+    const p=await browser();
+    const fields=await p.locator("input,textarea,select,button").evaluateAll(els=>els.map((e,index)=>{
+      const tag=e.tagName.toLowerCase();
+      const type=(e.getAttribute("type")||"").toLowerCase();
+      let label=e.getAttribute("aria-label")||"";
+      if(!label && e.id){
+        const l=Array.from(document.querySelectorAll("label")).find(x=>x.htmlFor===e.id);
+        if(l) label=(l.innerText||"").trim();
+      }
+      if(!label){
+        const parent=e.closest("label");
+        if(parent) label=(parent.innerText||"").trim();
+      }
+      return {
+        index,tag,type,
+        name:e.getAttribute("name"),
+        id:e.id||null,
+        label,
+        placeholder:e.getAttribute("placeholder"),
+        required:!!e.required,
+        disabled:!!e.disabled,
+        checked:"checked" in e ? !!e.checked : null,
+        value:type==="password" ? "[hidden]" : ("value" in e ? e.value : null)
+      };
+    }));
+    return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title(),fields})}]};
+  });
+
+  mcp.tool("browser_form_fill","Fill several form fields intelligently in one call",{
+    fields:z.array(z.object({
+      selector:z.string().optional(),
+      label:z.string().optional(),
+      name:z.string().optional(),
+      value:z.string(),
+      action:z.enum(["fill","select","check","uncheck"]).optional()
+    }))
+  },async({fields})=>{
+    const p=await browser();
+    const results=[];
+    for(const f of fields){
+      let loc;
+      if(f.selector) loc=p.locator(f.selector).first();
+      else if(f.label) loc=p.getByLabel(f.label).first();
+      else if(f.name) loc=p.locator('[name="'+f.name.replace(/"/g,'\\"')+'"]').first();
+      else throw new Error("Each field needs selector, label, or name");
+
+      const meta=await loc.evaluate(e=>({
+        tag:e.tagName.toLowerCase(),
+        type:(e.getAttribute("type")||"").toLowerCase()
+      }));
+
+      const action=f.action ||
+        (meta.tag==="select" ? "select" :
+        (meta.type==="checkbox" || meta.type==="radio") ? "check" : "fill");
+
+      if(action==="select"){
+        try{ await loc.selectOption({label:f.value}); }
+        catch{ await loc.selectOption(f.value); }
+      } else if(action==="check"){
+        await loc.check();
+      } else if(action==="uncheck"){
+        await loc.uncheck();
+      } else {
+        await loc.fill(f.value);
+      }
+      results.push({ok:true,label:f.label||null,name:f.name||null,action});
+    }
+    return {content:[{type:"text",text:JSON.stringify({ok:true,results})}]};
+  });
+
+  mcp.tool("browser_validation_errors","Read browser validation errors and visible error messages",{},async()=>{
+    const p=await browser();
+    const invalid=await p.locator("input:invalid,textarea:invalid,select:invalid").evaluateAll(els=>els.map(e=>({
+      name:e.getAttribute("name"),
+      id:e.id||null,
+      type:e.getAttribute("type"),
+      message:e.validationMessage||""
+    })));
+    const visibleErrors=await p.locator('[role="alert"],.error,.errors,.invalid-feedback,.field-error').evaluateAll(
+      els=>els.filter(e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length))
+              .map(e=>(e.innerText||"").trim()).filter(Boolean).slice(0,50)
+    );
+    return {content:[{type:"text",text:JSON.stringify({invalid,visibleErrors})}]};
+  });
+
+  mcp.tool("browser_popup_wait","Wait for a popup/new window, optionally triggered by clicking an element",{
+    selector:z.string().optional(),
+    text:z.string().optional(),
+    timeoutMs:z.number().int().min(500).max(30000).optional()
+  },async({selector,text,timeoutMs})=>{
+    const p=await browser();
+    const timeout=timeoutMs||15000;
+    let popup;
+    if(selector || text){
+      const loc=selector ? p.locator(selector).first() : p.getByText(text).first();
+      [popup]=await Promise.all([
+        p.waitForEvent("popup",{timeout}),
+        loc.click()
+      ]);
+    }else{
+      popup=await p.waitForEvent("popup",{timeout});
+    }
+    page=popup;
+    await popup.waitForLoadState("domcontentloaded",{timeout}).catch(()=>{});
+    const pages=context.pages();
+    return {content:[{type:"text",text:JSON.stringify({
+      ok:true,index:pages.indexOf(popup),url:popup.url(),title:await popup.title()
+    })}]};
+  });
+
+  mcp.tool("browser_downloads","List temporary downloads currently available",{},async()=>{
+    const now=Date.now();
+    const base=publicBaseUrl();
+    const items=[];
+    for(const [token,item] of downloads){
+      if(now>item.expiresAt){ downloads.delete(token); continue; }
+      items.push({
+        filename:item.filename,
+        sizeBytes:item.buffer.length,
+        url:(base?base:"")+"/download/"+token,
+        expiresAt:new Date(item.expiresAt).toISOString()
+      });
+    }
+    return {content:[{type:"text",text:JSON.stringify({downloads:items})}]};
+  });
+
+  mcp.tool("browser_resume_after_takeover","Resume automation after the user completed login/2FA/CAPTCHA",{
+    revokeActive:z.boolean().optional()
+  },async({revokeActive})=>{
+    const p=await browser();
+    if(revokeActive!==false) takeovers.clear();
+    const pages=context.pages();
+    const cookies=await context.cookies();
+    return {content:[{type:"text",text:JSON.stringify({
+      ok:true,
+      url:p.url(),
+      title:await p.title(),
+      tabs:pages.length,
+      cookies:cookies.length,
+      takeoverRevoked:revokeActive!==false
+    })}]};
+  });
+
   mcp.tool("browser_takeover_start","Create a temporary private takeover link so the user can interact directly with the current browser for login, 2FA, CAPTCHA, or other sensitive steps. The link expires automatically.",{},async()=>{
     await browser();
     const token=randomBytes(24).toString("hex");
