@@ -9,7 +9,7 @@
     "6080": {
       "label": "Sahbi Browser Cloud UI",
       "onAutoForward": "notify",
-      "visibility": "private"
+      "visibility": "public"
     },
     "8080": {
       "label": "Sahbi Browser MCP",
