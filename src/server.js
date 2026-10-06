@@ -3,10 +3,12 @@ import { chromium } from "playwright";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { setupOAuth } from "./oauth.js";
 import { createHash, timingSafeEqual, randomBytes } from "node:crypto";
 
 const app = express();
 app.use(express.json({limit:"2mb"}));
+app.use(express.urlencoded({extended:false,limit:"256kb"}));
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = process.env.SAHBI_TOKEN || "";
 const PLUGIN_KEY = TOKEN ? createHash("sha256").update(`sahbi-plugin:${TOKEN}`).digest("hex") : "";
@@ -34,6 +36,8 @@ function cloudBrowserUrl(){
   }
   return "";
 }
+
+const {mcpAuth}=setupOAuth(app,{legacyToken:TOKEN,legacyPluginKey:LEGACY_PLUGIN_KEY,publicBaseUrl});
 function takeoverAuth(req,res,next){
   const id=String(req.params.token||"");
   const session=takeovers.get(id);
@@ -101,12 +105,12 @@ async function browser(options={}){
   if(!page || page.isClosed()) page=context.pages().at(-1) || await context.newPage();
   return page;
 }
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.8.0",status:"ok"}));
-app.get("/health",(_req,res)=>res.json({ok:true,version:"0.8.0",mcp:"/mcp"}));
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"0.9.0",status:"ok"}));
+app.get("/health",(_req,res)=>res.json({ok:true,version:"0.9.0",mcp:"/mcp"}));
 app.get("/mcp-status",auth,(_req,res)=>res.json({ok:true,version:"0.3.1",...mcpStats}));
 
 function createMcpServer(){
-  const mcp = new McpServer({name:"sahbi-browser",version:"0.8.0"});
+  const mcp = new McpServer({name:"sahbi-browser",version:"0.9.0"});
   mcp.tool("browser_open","Open a URL in Sahbi Browser",{url:z.string().url()},async({url})=>{
     const p=await browser(); await p.goto(url,{waitUntil:"domcontentloaded",timeout:30000});
     return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};
@@ -357,7 +361,7 @@ async function handleMcp(req,res){
   try{await mcp.connect(transport); await transport.handleRequest(req,res,req.body); mcpStats.lastStatus=res.statusCode;}
   catch(e){mcpStats.lastStatus=500; console.error("MCP error",e); if(!res.headersSent)res.status(500).json({error:e.message});}
 }
-app.all("/mcp",auth,handleMcp);
+app.all("/mcp",mcpAuth,handleMcp);
 app.all("/plugin-mcp/:key",pluginCapabilityAuth,handleMcp);
 
 app.get("/takeover/:token",takeoverAuth,async(req,res)=>{
