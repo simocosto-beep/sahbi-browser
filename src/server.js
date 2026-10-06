@@ -11,6 +11,7 @@ const PORT = Number(process.env.PORT || 8080);
 const TOKEN = process.env.SAHBI_TOKEN || "";
 const PLUGIN_KEY = TOKEN ? createHash("sha256").update(`sahbi-plugin:${TOKEN}`).digest("hex") : "";
 let context, page;
+const PROFILE_DIR = process.env.SAHBI_PROFILE_DIR || "/workspaces/sahbi-browser/.data/profile";
 const mcpStats={requests:0,lastMethod:null,lastAt:null,lastStatus:null};
 
 function auth(req,res,next){
@@ -29,7 +30,7 @@ function pluginCapabilityAuth(req,res,next){
 }
 async function browser(){
   if(!context){
-    context=await chromium.launchPersistentContext("/tmp/sahbi-profile",{
+    context=await chromium.launchPersistentContext(PROFILE_DIR,{
       headless:true,
       args:["--no-sandbox","--disable-dev-shm-usage"]
     });
