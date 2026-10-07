@@ -295,6 +295,18 @@ app.get("/test-adsense",async(_req,res)=>{
     res.status(500).json({ok:false,error:String(error?.message||error)});
   }
 });
+app.get("/test-takeover",async(_req,res)=>{
+  try{
+    await browser();
+    const token=randomBytes(24).toString("hex");
+    const expiresAt=Date.now()+TAKEOVER_TTL;
+    takeovers.set(token,{expiresAt});
+    const base=publicBaseUrl();
+    res.redirect(302,`${base}/takeover/${token}`);
+  }catch(error){
+    res.status(500).send(String(error?.message||error));
+  }
+});
 app.all("/mcp",handleMcp);
 
 function takeover(req,res,next){
