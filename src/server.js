@@ -328,6 +328,20 @@ app.get("/test-sites",async(_req,res)=>{
     res.status(500).json({ok:false,error:String(error?.message||error)});
   }
 });
+app.get("/inspect-zinkom-ads",async(_req,res)=>{
+  try{
+    const p=await browser();
+    await p.goto("https://adsense.google.com/adsense/u/0/pub-8667452313478070/sites/list",{waitUntil:"domcontentloaded",timeout:30000});
+    await p.waitForTimeout(1200);
+    const row=p.getByText("zinkom.ma",{exact:true}).filter({visible:true}).first();
+    await row.click({timeout:10000});
+    await p.waitForTimeout(1200);
+    const text=(await p.locator("body").innerText()).slice(0,16000);
+    res.json({ok:true,url:p.url(),title:await p.title(),text});
+  }catch(error){
+    res.status(500).json({ok:false,error:String(error?.message||error)});
+  }
+});
 app.all("/mcp",handleMcp);
 
 function takeover(req,res,next){
