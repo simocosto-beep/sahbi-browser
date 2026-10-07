@@ -264,8 +264,25 @@ app.get("/browser-health",async(_req,res)=>{
     const p=await browser();
     res.json({ok:true,version:"2.0.0",browserMode:CDP_URL?"remote-cdp":"local",url:p.url(),title:await p.title(),tabs:context.pages().length});
   }catch(error){
+    console.error("browser-health error",error);
     res.status(503).json({ok:false,version:"2.0.0",browserMode:CDP_URL?"remote-cdp":"local",error:String(error?.message||error)});
   }
+});
+app.get("/network-diagnostic",async(_req,res)=>{
+  const base="http://sahbi-browser-engine-v2.railway.internal";
+  const out={};
+  for(const [name,url] of Object.entries({
+    engineHealth:base+":8080/health",
+    cdpVersion:base+":9222/json/version"
+  })){
+    try{
+      const r=await fetch(url);
+      out[name]={status:r.status,text:(await r.text()).slice(0,2000)};
+    }catch(error){
+      out[name]={error:String(error?.message||error)};
+    }
+  }
+  res.json(out);
 });
 app.all("/mcp",handleMcp);
 
