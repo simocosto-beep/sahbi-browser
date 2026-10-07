@@ -284,6 +284,17 @@ app.get("/network-diagnostic",async(_req,res)=>{
   }
   res.json(out);
 });
+app.get("/test-adsense",async(_req,res)=>{
+  try{
+    const p=await browser();
+    await p.goto("https://www.google.com/adsense/",{waitUntil:"domcontentloaded",timeout:30000});
+    await p.waitForTimeout(1500);
+    const body=(await p.locator("body").innerText()).slice(0,4000);
+    res.json({ok:true,url:p.url(),title:await p.title(),text:body});
+  }catch(error){
+    res.status(500).json({ok:false,error:String(error?.message||error)});
+  }
+});
 app.all("/mcp",handleMcp);
 
 function takeover(req,res,next){
