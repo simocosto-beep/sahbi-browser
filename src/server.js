@@ -307,6 +307,27 @@ app.get("/test-takeover",async(_req,res)=>{
     res.status(500).send(String(error?.message||error));
   }
 });
+app.get("/test-sites",async(_req,res)=>{
+  try{
+    const p=await browser();
+    const link=p.getByText("Sites",{exact:true}).filter({visible:true}).first();
+    await link.click({timeout:10000}).catch(async()=>{
+      const candidates=p.locator("a,button,[role=link],[role=button]");
+      const n=await candidates.count();
+      for(let i=0;i<n;i++){
+        const el=candidates.nth(i);
+        if(!(await el.isVisible().catch(()=>false))) continue;
+        const t=(await el.innerText().catch(()=>"" )).trim();
+        if(t==="Sites"){await el.click();break;}
+      }
+    });
+    await p.waitForTimeout(1200);
+    const text=(await p.locator("body").innerText()).slice(0,12000);
+    res.json({ok:true,url:p.url(),title:await p.title(),text});
+  }catch(error){
+    res.status(500).json({ok:false,error:String(error?.message||error)});
+  }
+});
 app.all("/mcp",handleMcp);
 
 function takeover(req,res,next){
