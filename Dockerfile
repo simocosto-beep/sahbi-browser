@@ -7,4 +7,4 @@ COPY . .
 ENV PORT=8080
 ENV SAHBI_PROFILE_DIR=/data/profile
 EXPOSE 8080
-CMD ["xvfb-run","-a","npm","start"]
+CMD ["npm","start"]
