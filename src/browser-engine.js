@@ -1,6 +1,7 @@
 import express from "express";
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
+import http from "node:http";
 import net from "node:net";
 
 const app=express();
@@ -32,14 +33,61 @@ child.on("exit",(code,signal)=>{
   console.error("Chromium exited",{code,signal});
 });
 
-const proxy=net.createServer(client=>{
-  const upstream=net.connect({host:"127.0.0.1",port:INTERNAL_CDP_PORT});
-  client.pipe(upstream);
-  upstream.pipe(client);
-  upstream.on("error",()=>client.destroy());
-  client.on("error",()=>upstream.destroy());
+const proxy=http.createServer((req,res)=>{
+  const headers={...req.headers,host:`localhost:${INTERNAL_CDP_PORT}`};
+  const upstream=http.request({
+    host:"127.0.0.1",
+    port:INTERNAL_CDP_PORT,
+    method:req.method,
+    path:req.url,
+    headers
+  },upRes=>{
+    const chunks=[];
+    upRes.on("data",chunk=>chunks.push(chunk));
+    upRes.on("end",()=>{
+      let body=Buffer.concat(chunks);
+      const contentType=String(upRes.headers["content-type"]||"");
+      if(contentType.includes("application/json")){
+        const text=body.toString("utf8")
+          .replaceAll(`ws://127.0.0.1:${INTERNAL_CDP_PORT}`,`ws://sahbi-browser-engine-v2.railway.internal:${CDP_PORT}`)
+          .replaceAll(`ws://localhost:${INTERNAL_CDP_PORT}`,`ws://sahbi-browser-engine-v2.railway.internal:${CDP_PORT}`);
+        body=Buffer.from(text);
+      }
+      const responseHeaders={...upRes.headers,"content-length":String(body.length)};
+      res.writeHead(upRes.statusCode||502,responseHeaders);
+      res.end(body);
+    });
+  });
+  upstream.on("error",error=>{
+    res.statusCode=502;
+    res.end(String(error?.message||error));
+  });
+  req.pipe(upstream);
 });
-proxy.listen(CDP_PORT,"0.0.0.0",()=>console.log(`CDP proxy listening on 0.0.0.0:${CDP_PORT} -> 127.0.0.1:${INTERNAL_CDP_PORT}`));
+
+proxy.on("upgrade",(req,clientSocket,head)=>{
+  const headers={...req.headers,host:`localhost:${INTERNAL_CDP_PORT}`};
+  const upstream=net.connect({host:"127.0.0.1",port:INTERNAL_CDP_PORT},()=>{
+    let raw=`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`;
+    for(const [key,value] of Object.entries(headers)){
+      if(value===undefined) continue;
+      if(Array.isArray(value)){
+        for(const v of value) raw+=`${key}: ${v}\r\n`;
+      }else{
+        raw+=`${key}: ${value}\r\n`;
+      }
+    }
+    raw+="\r\n";
+    upstream.write(raw);
+    if(head?.length) upstream.write(head);
+    clientSocket.pipe(upstream);
+    upstream.pipe(clientSocket);
+  });
+  upstream.on("error",()=>clientSocket.destroy());
+  clientSocket.on("error",()=>upstream.destroy());
+});
+
+proxy.listen(CDP_PORT,"0.0.0.0",()=>console.log(`CDP HTTP/WS proxy listening on 0.0.0.0:${CDP_PORT} -> 127.0.0.1:${INTERNAL_CDP_PORT}`));
 
 app.get("/",(_req,res)=>res.json({name:"Sahbi Browser Engine",version:"2.0.0",cdpPort:CDP_PORT,internalCdpPort:INTERNAL_CDP_PORT,running:!exited}));
 app.get("/health",(_req,res)=>res.status(exited?503:200).json({ok:!exited,version:"2.0.0",cdpPort:CDP_PORT,internalCdpPort:INTERNAL_CDP_PORT}));
