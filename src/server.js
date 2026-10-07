@@ -25,7 +25,7 @@ function publicBaseUrl(){
 async function browser(){
   if(!context){
     context=await chromium.launchPersistentContext(PROFILE_DIR,{
-      headless:false,
+      headless:true,
       locale:"fr-FR",
       timezoneId:"Europe/Paris",
       viewport:{width:1365,height:900},
@@ -75,7 +75,7 @@ function registerSecure(mcp,authContext,name,description,inputSchema,handler){
 }
 
 function createMcp(authContext){
-  const mcp=new McpServer({name:"sahbi-browser",version:"1.3.0"});
+  const mcp=new McpServer({name:"sahbi-browser",version:"1.2.1"});
 
   registerSecure(mcp,authContext,"browser_info","Get the active page URL, title, viewport, and tab count.",{},async()=>{
     const p=await browser();
@@ -249,8 +249,8 @@ async function handleMcp(req,res){
   }
 }
 
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"1.3.0",status:"ok",mcp:"/mcp"}));
-app.get("/health",(_req,res)=>res.json({ok:true,version:"1.3.0"}));
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"1.2.1",status:"ok",mcp:"/mcp"}));
+app.get("/health",(_req,res)=>res.json({ok:true,version:"1.2.1"}));
 app.all("/mcp",handleMcp);
 
 function takeover(req,res,next){
@@ -313,4 +313,4 @@ app.post("/takeover/:token/scroll",takeover,async(req,res)=>{const p=await brows
 app.post("/takeover/:token/navigate",takeover,async(req,res)=>{const p=await browser();await p.goto(String(req.body.url),{waitUntil:"domcontentloaded",timeout:30000});res.json({ok:true,url:p.url(),title:await p.title()})});
 app.post("/takeover/:token/back",takeover,async(_req,res)=>{const p=await browser();await p.goBack({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);res.json({ok:true,url:p.url(),title:await p.title()})});
 
-app.listen(PORT,"0.0.0.0",()=>console.log(`Sahbi Browser 1.3.0 listening on ${PORT}`));
+app.listen(PORT,"0.0.0.0",()=>console.log(`Sahbi Browser 1.2.1 listening on ${PORT}`));
