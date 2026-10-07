@@ -259,6 +259,14 @@ async function handleMcp(req,res){
 
 app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"2.0.0",status:"ok",mcp:"/mcp"}));
 app.get("/health",(_req,res)=>res.json({ok:true,version:"2.0.0",browserMode:CDP_URL?"remote-cdp":"local"}));
+app.get("/browser-health",async(_req,res)=>{
+  try{
+    const p=await browser();
+    res.json({ok:true,version:"2.0.0",browserMode:CDP_URL?"remote-cdp":"local",url:p.url(),title:await p.title(),tabs:context.pages().length});
+  }catch(error){
+    res.status(503).json({ok:false,version:"2.0.0",browserMode:CDP_URL?"remote-cdp":"local",error:String(error?.message||error)});
+  }
+});
 app.all("/mcp",handleMcp);
 
 function takeover(req,res,next){
