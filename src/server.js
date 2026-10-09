@@ -1,5 +1,8 @@
 import express from "express";
-import { chromium } from "playwright";
+import { Sessions } from "./session.js";
+import { registerFormTools } from "./form-tools.js";
+import { BrowserError, result, safeError, locate, gate, webUrl } from "./forms.js";
+import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -7,58 +10,27 @@ import { randomBytes } from "node:crypto";
 import { setupOAuth } from "./oauth.js";
 
 const app=express();
-app.use(express.json({limit:"2mb"}));
+app.use(express.json({limit:"30mb"}));
 app.use(express.urlencoded({extended:false,limit:"256kb"}));
 
 const PORT=Number(process.env.PORT||8080);
 const PROFILE_DIR=process.env.SAHBI_PROFILE_DIR||"/data/profile";
-const CDP_URL=String(process.env.SAHBI_CDP_URL||"").trim();
 const TAKEOVER_TTL=10*60*1000;
 
+const sessions=new Sessions(PROFILE_DIR);
 let context=null;
 let page=null;
-let remoteBrowser=null;
 const takeovers=new Map();
-
+let operationQueue=Promise.resolve();
+function humanActive(){for(const [k,v] of takeovers){if(Date.now()>v.expiresAt)takeovers.delete(k);}return takeovers.size>0;}
 function publicBaseUrl(){
   return String(process.env.SAHBI_PUBLIC_BASE_URL||"").replace(/\/$/,"");
 }
 
 async function browser(){
-  if(!context){
-    if(CDP_URL){
-      remoteBrowser=await chromium.connectOverCDP(CDP_URL);
-      context=remoteBrowser.contexts()[0];
-      if(!context) throw new Error("Remote browser has no default context");
-    }else{
-      context=await chromium.launchPersistentContext(PROFILE_DIR,{
-        headless:true,
-        locale:"fr-FR",
-        timezoneId:"Europe/Paris",
-        viewport:{width:1365,height:900},
-        acceptDownloads:true,
-        serviceWorkers:"allow",
-        args:["--no-sandbox","--disable-dev-shm-usage","--window-size=1365,900"]
-      });
-    }
-    page=context.pages()[0]||await context.newPage();
-    context.on("page",async newPage=>{
-      page=newPage;
-      await newPage.waitForLoadState("domcontentloaded",{timeout:15000}).catch(()=>null);
-    });
-  }
-  if(!page||page.isClosed()) page=context.pages().at(-1)||await context.newPage();
-  return page;
+  page=await sessions.page();context=(await sessions.current()).context;return page;
 }
-
-function locatorFor(p,{selector,label,text,role,name}){
-  if(selector) return p.locator(selector).first();
-  if(label) return p.getByLabel(label).first();
-  if(role&&name) return p.getByRole(role,{name}).first();
-  if(text) return p.getByText(text).first();
-  throw new Error("Provide selector, label, text, or role+name");
-}
-
+async function locatorFor(p,args){return locate(p,args);}
 const {authenticateRequest,oauthChallengeValue}=setupOAuth(app,{publicBaseUrl});
 
 function registerSecure(mcp,authContext,name,description,inputSchema,handler){
@@ -74,29 +46,30 @@ function registerSecure(mcp,authContext,name,description,inputSchema,handler){
         _meta:{"mcp/www_authenticate":[oauthChallengeValue("invalid_token","Connect Sahbi Browser to continue")]}
       };
     }
-    try{
-      return await handler(args||{});
-    }catch(error){
-      return {isError:true,content:[{type:"text",text:String(error?.message||error)}]};
-    }
+    const run=async()=>{
+      if(humanActive() && !['browser_takeover_end','browser_info'].includes(name)) return result({ok:false,status:'blocked',code:'human_takeover_active'});
+      try{if(['browser_select','browser_check','browser_uncheck','browser_press'].includes(name)){const status=await gate(await browser());if(status)return result({ok:false,status});}return await handler(args||{});}catch(error){return {isError:true,...result(safeError(error))};}
+    };
+    const job=operationQueue.then(run,run);operationQueue=job.catch(()=>{});return job;
   });
 }
 
 function createMcp(authContext){
-  const mcp=new McpServer({name:"sahbi-browser",version:"2.0.0"});
+  const mcp=new McpServer({name:"sahbi-browser",version:"2.1.0"});
 
+  registerFormTools((...args)=>registerSecure(mcp,authContext,...args),{browser,sessions,downloadDir:path.join(path.dirname(PROFILE_DIR),'downloads'),uploadRoots:(process.env.SAHBI_UPLOAD_ROOTS||'/mnt/data').split(':')});
   registerSecure(mcp,authContext,"browser_info","Get the active page URL, title, viewport, and tab count.",{},async()=>{
     const p=await browser();
     return {content:[{type:"text",text:JSON.stringify({
       url:p.url(),title:await p.title(),
       viewport:await p.evaluate(()=>({width:innerWidth,height:innerHeight})),
-      tabs:context.pages().length
+      tabs:context.pages().length,profile:sessions.active,version:"2.1.0",takeover:humanActive(),recovery:sessions.events.splice(0)
     })}]};
   });
 
   registerSecure(mcp,authContext,"browser_open","Open a URL in the active tab.",{url:z.string().url()},async({url})=>{
     const p=await browser();
-    await p.goto(url,{waitUntil:"domcontentloaded",timeout:30000});
+    await p.goto(webUrl(url),{waitUntil:"domcontentloaded",timeout:30000});
     return {content:[{type:"text",text:JSON.stringify({url:p.url(),title:await p.title()})}]};
   });
 
@@ -127,21 +100,26 @@ function createMcp(authContext){
     role:z.string().optional(),name:z.string().optional()
   },async(args)=>{
     const p=await browser();
-    await locatorFor(p,args).click();
+    const blocked=await gate(p);if(blocked)return result({ok:false,status:blocked});
+    const target=await locatorFor(p,args);
+    if(await target.evaluate(e=>(e.type==='submit'&&!!e.form)||!!e.closest('button[type=submit],input[type=submit]')))return result({ok:false,status:'blocked',code:'use_browser_submit'});
+    await target.click();
     await p.waitForTimeout(250);
     return {content:[{type:"text",text:JSON.stringify({ok:true,url:p.url(),title:await p.title()})}]};
   });
 
   registerSecure(mcp,authContext,"browser_fill","Replace a field's value by selector or label.",{
-    selector:z.string().optional(),label:z.string().optional(),value:z.string()
+    selector:z.string().optional(),label:z.string().optional(),name:z.string().optional(),text:z.string().optional(),value:z.string()
   },async(args)=>{
     const p=await browser();
-    await locatorFor(p,args).fill(args.value);
+    const blocked=await gate(p);if(blocked)return result({ok:false,status:blocked});
+    await (await locatorFor(p,args)).fill(args.value);
     return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
   });
 
   registerSecure(mcp,authContext,"browser_press","Press a keyboard key in the active page.",{key:z.string()},async({key})=>{
     const p=await browser();
+    if(/Enter|NumpadEnter|Space|Arrow/i.test(key)) return result({ok:false,status:'blocked',code:'use_specific_form_tool_or_takeover'});
     await p.keyboard.press(key);
     return {content:[{type:"text",text:JSON.stringify({ok:true})}]};
   });
@@ -187,7 +165,8 @@ function createMcp(authContext){
   },async({url})=>{
     await browser();
     page=await context.newPage();
-    if(url) await page.goto(url,{waitUntil:"domcontentloaded",timeout:30000});
+    (await sessions.current()).page=page;
+    if(url) await page.goto(webUrl(url),{waitUntil:"domcontentloaded",timeout:30000});
     return {content:[{type:"text",text:JSON.stringify({url:page.url(),title:await page.title()})}]};
   });
 
@@ -198,6 +177,7 @@ function createMcp(authContext){
     const pages=context.pages();
     if(!pages[index]) throw new Error("Tab not found");
     page=pages[index];
+    (await sessions.current()).page=page;
     await page.bringToFront();
     return {content:[{type:"text",text:JSON.stringify({index,url:page.url(),title:await page.title()})}]};
   });
@@ -211,6 +191,7 @@ function createMcp(authContext){
     if(!target) throw new Error("Tab not found");
     await target.close();
     page=context.pages().at(-1)||await context.newPage();
+    (await sessions.current()).page=page;
     return {content:[{type:"text",text:JSON.stringify({ok:true,url:page.url()})}]};
   });
 
@@ -222,11 +203,11 @@ function createMcp(authContext){
     return {content:[{type:"image",data:png.toString("base64"),mimeType:"image/png"}]};
   });
 
-  registerSecure(mcp,authContext,"browser_takeover_start","Create a temporary private takeover page for login, 2FA, CAPTCHA, or manual interaction.",{},async()=>{
+  registerSecure(mcp,authContext,"browser_takeover_start","Private human takeover for login, CAPTCHA, 2FA, identity verification or explicitly human actions.",{reason:z.enum(["login","captcha","2fa","human_verification","human_action"]).default("human_action")},async({reason})=>{
     await browser();
     const token=randomBytes(24).toString("hex");
     const expiresAt=Date.now()+TAKEOVER_TTL;
-    takeovers.set(token,{expiresAt});
+    takeovers.set(token,{expiresAt,reason,page});
     const base=publicBaseUrl();
     if(!base) throw new Error("SAHBI_PUBLIC_BASE_URL is not configured");
     return {content:[{type:"text",text:JSON.stringify({
@@ -252,96 +233,13 @@ async function handleMcp(req,res){
     await mcp.connect(transport);
     await transport.handleRequest(req,res,req.body);
   }catch(error){
-    console.error("MCP error",error);
-    if(!res.headersSent) res.status(500).json({error:String(error?.message||error)});
+    console.error("MCP request failed");
+    if(!res.headersSent) res.status(500).json({error:"MCP request failed"});
   }
 }
 
-app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"2.0.0",status:"ok",mcp:"/mcp"}));
-app.get("/health",(_req,res)=>res.json({ok:true,version:"2.0.0",browserMode:CDP_URL?"remote-cdp":"local"}));
-app.get("/browser-health",async(_req,res)=>{
-  try{
-    const p=await browser();
-    res.json({ok:true,version:"2.0.0",browserMode:CDP_URL?"remote-cdp":"local",url:p.url(),title:await p.title(),tabs:context.pages().length});
-  }catch(error){
-    console.error("browser-health error",error);
-    res.status(503).json({ok:false,version:"2.0.0",browserMode:CDP_URL?"remote-cdp":"local",error:String(error?.message||error)});
-  }
-});
-app.get("/network-diagnostic",async(_req,res)=>{
-  const base="http://sahbi-browser-engine-v2.railway.internal";
-  const out={};
-  for(const [name,url] of Object.entries({
-    engineHealth:base+":8080/health",
-    cdpVersion:base+":9222/json/version"
-  })){
-    try{
-      const r=await fetch(url);
-      out[name]={status:r.status,text:(await r.text()).slice(0,2000)};
-    }catch(error){
-      out[name]={error:String(error?.message||error)};
-    }
-  }
-  res.json(out);
-});
-app.get("/test-adsense",async(_req,res)=>{
-  try{
-    const p=await browser();
-    await p.goto("https://www.google.com/adsense/",{waitUntil:"domcontentloaded",timeout:30000});
-    await p.waitForTimeout(1500);
-    const body=(await p.locator("body").innerText()).slice(0,4000);
-    res.json({ok:true,url:p.url(),title:await p.title(),text:body});
-  }catch(error){
-    res.status(500).json({ok:false,error:String(error?.message||error)});
-  }
-});
-app.get("/test-takeover",async(_req,res)=>{
-  try{
-    await browser();
-    const token=randomBytes(24).toString("hex");
-    const expiresAt=Date.now()+TAKEOVER_TTL;
-    takeovers.set(token,{expiresAt});
-    const base=publicBaseUrl();
-    res.redirect(302,`${base}/takeover/${token}`);
-  }catch(error){
-    res.status(500).send(String(error?.message||error));
-  }
-});
-app.get("/test-sites",async(_req,res)=>{
-  try{
-    const p=await browser();
-    const link=p.getByText("Sites",{exact:true}).filter({visible:true}).first();
-    await link.click({timeout:10000}).catch(async()=>{
-      const candidates=p.locator("a,button,[role=link],[role=button]");
-      const n=await candidates.count();
-      for(let i=0;i<n;i++){
-        const el=candidates.nth(i);
-        if(!(await el.isVisible().catch(()=>false))) continue;
-        const t=(await el.innerText().catch(()=>"" )).trim();
-        if(t==="Sites"){await el.click();break;}
-      }
-    });
-    await p.waitForTimeout(1200);
-    const text=(await p.locator("body").innerText()).slice(0,12000);
-    res.json({ok:true,url:p.url(),title:await p.title(),text});
-  }catch(error){
-    res.status(500).json({ok:false,error:String(error?.message||error)});
-  }
-});
-app.get("/inspect-zinkom-ads",async(_req,res)=>{
-  try{
-    const p=await browser();
-    await p.goto("https://adsense.google.com/adsense/u/0/pub-8667452313478070/sites/list",{waitUntil:"domcontentloaded",timeout:30000});
-    await p.waitForTimeout(1200);
-    const row=p.getByText("zinkom.ma",{exact:true}).filter({visible:true}).first();
-    await row.click({timeout:10000});
-    await p.waitForTimeout(1200);
-    const text=(await p.locator("body").innerText()).slice(0,16000);
-    res.json({ok:true,url:p.url(),title:await p.title(),text});
-  }catch(error){
-    res.status(500).json({ok:false,error:String(error?.message||error)});
-  }
-});
+app.get("/",(_req,res)=>res.json({name:"Sahbi Browser",version:"2.1.0",status:"ok",mcp:"/mcp"}));
+app.get("/health",(_req,res)=>res.json({ok:true,version:"2.1.0"}));
 app.all("/mcp",handleMcp);
 
 function takeover(req,res,next){
@@ -351,6 +249,8 @@ function takeover(req,res,next){
     takeovers.delete(token);
     return res.status(404).send("Takeover expired or not found.");
   }
+  res.setHeader("Cache-Control","no-store");
+  res.setHeader("Referrer-Policy","no-referrer");
   next();
 }
 
@@ -373,10 +273,10 @@ button{touch-action:manipulation;white-space:nowrap}button:active{transform:scal
 </style></head><body>
 <div id="bar">
   <div class="row"><button onclick="back()">←</button><button onclick="refresh()">↻</button><input id="url" autocapitalize="none" autocomplete="off" spellcheck="false"><button onclick="go()">Go</button></div>
-  <div class="row"><input id="text" type="text" placeholder="Texte à saisir" autocapitalize="none" autocomplete="off" spellcheck="false"><button id="visibility" onclick="toggleVisibility()">🙈 Masquer</button><button onclick="typeText()">Saisir</button></div>
+  <div class="row"><input id="text" type="password" placeholder="Texte à saisir" autocapitalize="none" autocomplete="off" spellcheck="false"><button id="visibility" onclick="toggleVisibility()">👁 Afficher</button><button onclick="typeText()">Saisir</button></div>
   <div class="row"><button onclick="key('Enter')">Enter</button><button onclick="key('Tab')">Tab</button><button onclick="scrollPage('up')">↑</button><button onclick="scrollPage('down')">↓</button></div>
 </div>
-<div class="note">Prise en main privée temporaire. Le texte est visible pendant la saisie ; utilise “Masquer” si nécessaire. Le lien expire automatiquement.</div><div id="wrap"><img id="screen"></div>
+<div class="note">Prise en main privée temporaire. Le texte est masqué par défaut pendant la saisie. Le lien expire automatiquement.</div><div id="wrap"><img id="screen"></div>
 <script>
 const base='/takeover/'+"${req.params.token}";
 const img=document.getElementById('screen');
@@ -401,7 +301,10 @@ app.post("/takeover/:token/click",takeover,async(req,res)=>{const p=await browse
 app.post("/takeover/:token/type",takeover,async(req,res)=>{const p=await browser();await p.keyboard.insertText(String(req.body.text||""));res.json({ok:true})});
 app.post("/takeover/:token/key",takeover,async(req,res)=>{const p=await browser();await p.keyboard.press(String(req.body.key||"Enter"));res.json({ok:true})});
 app.post("/takeover/:token/scroll",takeover,async(req,res)=>{const p=await browser();const direction=String(req.body.direction||"down");await p.evaluate(d=>scrollBy(0,d==="up"?-650:650),direction);res.json({ok:true})});
-app.post("/takeover/:token/navigate",takeover,async(req,res)=>{const p=await browser();await p.goto(String(req.body.url),{waitUntil:"domcontentloaded",timeout:30000});res.json({ok:true,url:p.url(),title:await p.title()})});
+app.post("/takeover/:token/navigate",takeover,async(req,res)=>{const p=await browser();await p.goto(webUrl(String(req.body.url)),{waitUntil:"domcontentloaded",timeout:30000});res.json({ok:true,url:p.url(),title:await p.title()})});
 app.post("/takeover/:token/back",takeover,async(_req,res)=>{const p=await browser();await p.goBack({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);res.json({ok:true,url:p.url(),title:await p.title()})});
 
-app.listen(PORT,"0.0.0.0",()=>console.log(`Sahbi Browser 2.0.0 listening on ${PORT}`));
+app.use((error,req,res,next)=>{if(!res.headersSent)res.status(500).json({error:'operation_failed'});});
+const httpServer=app.listen(PORT,"0.0.0.0",()=>console.log(`Sahbi Browser 2.1.0 listening on ${PORT}`));
+async function shutdown(){httpServer.close();await sessions.close();process.exit(0);}
+process.on('SIGTERM',shutdown);process.on('SIGINT',shutdown);

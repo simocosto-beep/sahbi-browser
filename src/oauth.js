@@ -59,7 +59,9 @@ export function setupOAuth(app, options={}) {
     state.auth.bootstrapHash=sha256("bootstrap:"+code);
     state.auth.bootstrapExpiresAt=Date.now()+30*60*1000;
     save();
-    console.log("SAHBI_OAUTH_BOOTSTRAP_CODE="+code+" (valid 30 minutes; one-time setup only)");
+    const setupPath=storePath+'.bootstrap';
+    fs.writeFileSync(setupPath,code,{mode:0o600});
+    console.log("OAuth bootstrap created in private setup file; no credentials are logged.");
   }
 
   function save(){
