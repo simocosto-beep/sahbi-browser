@@ -30,8 +30,8 @@ test('real HTTP MCP: OAuth, registration, all tools, takeover exclusion and resu
   const attached=await call('browser_upload',{name:'cv',paths:['/mnt/data/sahbi-test-fixtures/test.docx']});assert.equal(attached.status,'attached');
   assert.equal((await call('browser_validate_form')).status,'valid');
   assert.equal((await call('browser_submit',{knownValuesConfirmed:false})).status,'blocked');
-  const handoff=await call('browser_takeover_start',{reason:'login'});assert(handoff.url);assert.equal((await call('browser_fill',{name:'anything',value:'test'})).code,'human_takeover_active');
-  await call('browser_takeover_end');assert((await call('browser_form_state')).ok);assert.equal((await fetch(handoff.url)).status,404);
+  const handoff=await call('browser_takeover_start',{reason:'login'});assert(handoff.url);const takeoverToken=new URL(handoff.url).hash.slice(1);assert(takeoverToken);const ui=await (await fetch(handoff.url)).text();assert(!ui.includes(takeoverToken));assert(ui.includes('type="password"'));assert.equal((await fetch(base+'/takeover/api/state',{headers:{'x-sahbi-takeover':takeoverToken}})).status,200);assert.equal((await fetch(base+'/takeover/api/state')).status,404);assert.equal((await call('browser_fill',{name:'anything',value:'test'})).code,'human_takeover_active');
+  await call('browser_takeover_end');assert((await call('browser_form_state')).ok);assert.equal((await fetch(base+'/takeover/api/state',{headers:{'x-sahbi-takeover':new URL(handoff.url).hash.slice(1)}})).status,404);
   assert(!logs.includes(pin));assert(!logs.includes(token.access_token));
  }finally{await anon.close();await client.close();proc.kill('SIGTERM');await new Promise(r=>proc.once('exit',r));await new Promise(r=>fixture.close(r));await fs.rm(root,{recursive:true,force:true});}
 });

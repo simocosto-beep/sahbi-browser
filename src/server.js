@@ -211,7 +211,7 @@ function createMcp(authContext){
     const base=publicBaseUrl();
     if(!base) throw new Error("SAHBI_PUBLIC_BASE_URL is not configured");
     return {content:[{type:"text",text:JSON.stringify({
-      ok:true,url:`${base}/takeover/${token}`,
+      ok:true,url:`${base}/takeover#${token}`,
       expiresAt:new Date(expiresAt).toISOString(),validMinutes:10
     })}]};
   });
@@ -243,7 +243,7 @@ app.get("/health",(_req,res)=>res.json({ok:true,version:"2.1.0"}));
 app.all("/mcp",handleMcp);
 
 function takeover(req,res,next){
-  const token=String(req.params.token||"");
+  const token=String(req.headers["x-sahbi-takeover"]||"");
   const session=takeovers.get(token);
   if(!session||Date.now()>session.expiresAt){
     takeovers.delete(token);
@@ -254,8 +254,9 @@ function takeover(req,res,next){
   next();
 }
 
-app.get("/takeover/:token",takeover,async(req,res)=>{
-  await browser();
+app.get("/takeover",async(req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  res.setHeader("Referrer-Policy","no-referrer");
   res.type("html").send(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sahbi Browser</title>
@@ -278,31 +279,35 @@ button{touch-action:manipulation;white-space:nowrap}button:active{transform:scal
 </div>
 <div class="note">Prise en main privée temporaire. Le texte est masqué par défaut pendant la saisie. Le lien expire automatiquement.</div><div id="wrap"><img id="screen"></div>
 <script>
-const base='/takeover/'+"${req.params.token}";
+const base='/takeover/api';
+const token=location.hash.slice(1);
+history.replaceState(null,'',location.pathname);
+function api(url,options={}){return fetch(url,{...options,headers:{...options.headers,'x-sahbi-takeover':token}});}
 const img=document.getElementById('screen');
-async function state(){const r=await fetch(base+'/state');const j=await r.json();document.getElementById('url').value=j.url||''}
-function refresh(){img.src=base+'/screen.png?t='+Date.now();state()}
-img.onclick=async e=>{const r=img.getBoundingClientRect();const x=(e.clientX-r.left)*(img.naturalWidth/r.width);const y=(e.clientY-r.top)*(img.naturalHeight/r.height);await fetch(base+'/click',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({x,y})});setTimeout(refresh,250)}
-async function typeText(){const el=document.getElementById('text');const text=el.value;if(!text)return;await fetch(base+'/type',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});el.value='';setTimeout(refresh,250)}
+async function state(){const r=await api(base+'/state');const j=await r.json();document.getElementById('url').value=j.url||''}
+let refreshing=false,previousImage=null;
+async function refresh(){if(refreshing)return;refreshing=true;try{const r=await api(base+'/screen.png');if(!r.ok)return;const next=URL.createObjectURL(await r.blob());img.src=next;if(previousImage)URL.revokeObjectURL(previousImage);previousImage=next;await state();}finally{refreshing=false;}}
+img.onclick=async e=>{const r=img.getBoundingClientRect();const x=(e.clientX-r.left)*(img.naturalWidth/r.width);const y=(e.clientY-r.top)*(img.naturalHeight/r.height);await api(base+'/click',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({x,y})});setTimeout(refresh,250)}
+async function typeText(){const el=document.getElementById('text');const text=el.value;if(!text)return;await api(base+'/type',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});el.value='';setTimeout(refresh,250)}
 function toggleVisibility(){const el=document.getElementById('text');const b=document.getElementById('visibility');const hiding=el.type==='text';el.type=hiding?'password':'text';b.textContent=hiding?'👁 Afficher':'🙈 Masquer';el.focus()}
-async function key(k){await fetch(base+'/key',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k})});setTimeout(refresh,250)}
-async function scrollPage(direction){await fetch(base+'/scroll',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({direction})});setTimeout(refresh,250)}
-async function go(){await fetch(base+'/navigate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:document.getElementById('url').value})});setTimeout(refresh,500)}
-async function back(){await fetch(base+'/back',{method:'POST'});setTimeout(refresh,400)}
+async function key(k){await api(base+'/key',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k})});setTimeout(refresh,250)}
+async function scrollPage(direction){await api(base+'/scroll',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({direction})});setTimeout(refresh,250)}
+async function go(){await api(base+'/navigate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:document.getElementById('url').value})});setTimeout(refresh,500)}
+async function back(){await api(base+'/back',{method:'POST'});setTimeout(refresh,400)}
 document.getElementById('text').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();typeText()}})
 document.getElementById('url').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();go()}})
 setInterval(refresh,1800);refresh();
 </script></body></html>`);
 });
 
-app.get("/takeover/:token/state",takeover,async(_req,res)=>{const p=await browser();res.json({url:p.url(),title:await p.title()})});
-app.get("/takeover/:token/screen.png",takeover,async(_req,res)=>{const p=await browser();res.type("png").send(await p.screenshot({type:"png"}))});
-app.post("/takeover/:token/click",takeover,async(req,res)=>{const p=await browser();await p.mouse.click(Number(req.body.x),Number(req.body.y));res.json({ok:true})});
-app.post("/takeover/:token/type",takeover,async(req,res)=>{const p=await browser();await p.keyboard.insertText(String(req.body.text||""));res.json({ok:true})});
-app.post("/takeover/:token/key",takeover,async(req,res)=>{const p=await browser();await p.keyboard.press(String(req.body.key||"Enter"));res.json({ok:true})});
-app.post("/takeover/:token/scroll",takeover,async(req,res)=>{const p=await browser();const direction=String(req.body.direction||"down");await p.evaluate(d=>scrollBy(0,d==="up"?-650:650),direction);res.json({ok:true})});
-app.post("/takeover/:token/navigate",takeover,async(req,res)=>{const p=await browser();await p.goto(webUrl(String(req.body.url)),{waitUntil:"domcontentloaded",timeout:30000});res.json({ok:true,url:p.url(),title:await p.title()})});
-app.post("/takeover/:token/back",takeover,async(_req,res)=>{const p=await browser();await p.goBack({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);res.json({ok:true,url:p.url(),title:await p.title()})});
+app.get("/takeover/api/state",takeover,async(_req,res)=>{const p=await browser();res.json({url:p.url(),title:await p.title()})});
+app.get("/takeover/api/screen.png",takeover,async(_req,res)=>{const p=await browser();res.type("png").send(await p.screenshot({type:"png"}))});
+app.post("/takeover/api/click",takeover,async(req,res)=>{const p=await browser();await p.mouse.click(Number(req.body.x),Number(req.body.y));res.json({ok:true})});
+app.post("/takeover/api/type",takeover,async(req,res)=>{const p=await browser();await p.keyboard.insertText(String(req.body.text||""));res.json({ok:true})});
+app.post("/takeover/api/key",takeover,async(req,res)=>{const p=await browser();await p.keyboard.press(String(req.body.key||"Enter"));res.json({ok:true})});
+app.post("/takeover/api/scroll",takeover,async(req,res)=>{const p=await browser();const direction=String(req.body.direction||"down");await p.evaluate(d=>scrollBy(0,d==="up"?-650:650),direction);res.json({ok:true})});
+app.post("/takeover/api/navigate",takeover,async(req,res)=>{const p=await browser();await p.goto(webUrl(String(req.body.url)),{waitUntil:"domcontentloaded",timeout:30000});res.json({ok:true,url:p.url(),title:await p.title()})});
+app.post("/takeover/api/back",takeover,async(_req,res)=>{const p=await browser();await p.goBack({waitUntil:"domcontentloaded",timeout:30000}).catch(()=>null);res.json({ok:true,url:p.url(),title:await p.title()})});
 
 app.use((error,req,res,next)=>{if(!res.headersSent)res.status(500).json({error:'operation_failed'});});
 const httpServer=app.listen(PORT,"0.0.0.0",()=>console.log(`Sahbi Browser 2.1.0 listening on ${PORT}`));

@@ -76,6 +76,7 @@ export class Sessions {
     // Require an existing profile, never reset an inferred path.
     const dir=this.directory(key);try{await fs.access(dir);}catch{throw new BrowserError('profile_not_found');}
     const r=this.profiles.get(key);
+    if((key==='default'&&process.env.SAHBI_CDP_URL)||r?.remote)throw new BrowserError('remote_default_reset_requires_engine_maintenance');
     if(r){await this.persist(r);await r.saving;r.closed=true;if(r.remote){await r.context.clearCookies();for(const p of r.context.pages()){await p.evaluate(()=>{localStorage.clear();sessionStorage.clear();}).catch(()=>{});await p.close();}await r.remote.close();}else await r.context.close();this.profiles.delete(key);}
     await fs.rm(dir,{recursive:true,force:true});
     if(this.active===key)this.active='default';

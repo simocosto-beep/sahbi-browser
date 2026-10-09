@@ -206,6 +206,8 @@ export async function submit(p,a={}) {
   // Recheck immediately before click. Native validation is never disabled.
   const last=await validateForm(p,{selector});if(!last.ok)return last;
   const before=p.url();
+  const successPattern=/application (has been |was )?(successfully )?(submitted|received)|thank you for applying|candidature.{0,30}(envoyée|reçue)|merci pour votre candidature/i;
+  const alreadyConfirmed=successPattern.test(await p.locator('body').innerText());
   const errorsBefore=new Set(await p.locator('[role=alert],.alert-danger,.error-message').allTextContents());
   let responseStatus=null;
   const listener=r=>{if(r.request().method()==='POST'&&r.frame()===p.mainFrame()&&r.status()>=400)responseStatus=r.status();};
@@ -218,7 +220,7 @@ export async function submit(p,a={}) {
       const errors=(await p.locator('[role=alert],.alert-danger,.error-message').filter({visible:true}).allTextContents()).filter(x=>x.trim()&&!errorsBefore.has(x));
       if(errors.length||responseStatus) return {ok:false,status:'failed',messages:errors,httpStatus:responseStatus};
       const text=await p.locator('body').innerText();
-      if(/application (has been |was )?(successfully )?(submitted|received)|thank you for applying|candidature.{0,30}(envoyée|reçue)|merci pour votre candidature/i.test(text)) return {ok:true,status:'submitted',confirmation:true,redirected:p.url()!==before};
+      if(!alreadyConfirmed&&successPattern.test(text)) return {ok:true,status:'submitted',confirmation:true,redirected:p.url()!==before};
       if(await root.count()) {const v=await validateForm(p,{selector});if(!v.ok)return v;}
       await p.waitForTimeout(200);
     }while(Date.now()<deadline);

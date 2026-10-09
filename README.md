@@ -73,7 +73,9 @@ A crashed tab is recreated at its previous URL. Other tabs and the browser
 context survive. Unsaved form values and file selections are **not** recovered
 automatically: inspect, refill known values, reattach the actual files, then
 validate again. Local profiles persist on disk; the separate engine owns its
-remote default profile. API state and OAuth files must stay on a private volume.
+remote default profile. API state and OAuth files must stay on a private volume. Resetting the remote
+legacy default profile requires engine maintenance and is refused by this API;
+reset of the isolated domain/account profiles is supported.
 
 ## Tests
 
@@ -109,4 +111,6 @@ port private; do not expose it publicly. Preserve existing OAuth configuration
 and volume. Initial OAuth setup codes are now written to a private `.bootstrap`
 file beside the OAuth store, not to logs. Existing PINs/sessions remain valid.
 Raw Playwright errors, request bodies, cookies and tokens are not logged by the
-API. Takeover links expire and are uncached; input is masked by default.
+API. Takeover secrets use URL fragments and request headers, never URL paths or query
+strings recorded by HTTP proxies. Links expire and are uncached; input is masked
+by default.
