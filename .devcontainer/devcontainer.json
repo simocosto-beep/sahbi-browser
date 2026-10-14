@@ -1,0 +1,21 @@
+{
+  "name": "Sahbi Browser 2.1 (on-demand development)",
+  "image": "mcr.microsoft.com/playwright:v1.63.0-noble",
+  "remoteUser": "root",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "postCreateCommand": "npm install --no-audit --no-fund && mkdir -p /workspaces/.sahbi-data/profile && chmod 700 /workspaces/.sahbi-data /workspaces/.sahbi-data/profile",
+  "forwardPorts": [
+    8080
+  ],
+  "portsAttributes": {
+    "8080": {
+      "label": "Sahbi MCP — private until OAuth tested",
+      "onAutoForward": "notify",
+      "visibility": "private"
+    }
+  },
+  "remoteEnv": {
+    "SAHBI_PROFILE_DIR": "/workspaces/.sahbi-data/profile",
+    "PORT": "8080"
+  }
+}
