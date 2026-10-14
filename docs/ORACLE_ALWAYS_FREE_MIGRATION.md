@@ -1,3 +1,28 @@
+# UPDATE — NO CREDIT CARD (2026-10-14)
+
+The owner does not want to provide a Visa/credit card and explicitly declined Oracle Cloud account verification. **Do not sign up for Oracle, buy a subscription, or provision anything on their behalf.** This runbook's Oracle steps are archived as a technical reference, **not the active migration plan**.
+
+## Fresh evidence from provider docs
+- **Koyeb Free:** 0.1 vCPU, 512 MB RAM, 2 GB temporary SSD. Scales to zero after one hour, does not support attached persistent volumes, and account verification requires payment card. Not suitable.
+  - https://www.koyeb.com/docs/reference/instances
+  - https://www.koyeb.com/docs/reference/volumes
+  - https://www.koyeb.com/docs/faqs/pricing
+- **Hugging Face Spaces:** New Docker/Gradio compute Spaces require a paid PRO/Team/Enterprise account. Free compute sleeps. Not suitable for this user.
+  - https://huggingface.co/docs/hub/en/spaces-overview
+- **Cloudflare Browser Run (formerly Browser Rendering):** Worker Free offers **10 browser minutes/day**, not 24/7, and the browser timeout/quotas make a durable persistent OAuth browser incompatible as currently designed. Useful only as an *optional future limited-use rewrite*, not a drop-in free replacement.
+  - https://developers.cloudflare.com/browser-run/pricing/
+  - https://developers.cloudflare.com/browser-run/limits/
+
+## Active plan — honest constraints
+1. Preserve GitHub source (`forms-2.1`) and Railway's three mounted volumes; do not delete or overwrite sessions.
+2. **No verified 24/7 zero-cost zero-card cloud Chromium host has been found.** Do not claim Sahbi Browser is restored or accessible in ChatGPT.
+3. Prepare a local Windows fallback for the user's PC; this only works while PC is on and still needs a secure public HTTPS MCP endpoint or supported connector to use remotely from ChatGPT.
+4. If a no-card, limited-duration remote browser service becomes available, assess Chromium compatibility, OAuth and persistent storage; label it temporary or limited as appropriate.
+5. For urgent Outlier application, use the official form on user's phone with manual sign-in and assistance; never claim it was submitted without confirmation.
+6. Keep troubleshooting current integration as blocked by expired Railway service; changing code or OAuth configuration cannot bring back a stopped platform subscription.
+
+---
+
 # Sahbi Browser — Oracle Cloud Always Free migration checklist
 
 Status: PREPARATION ONLY. Not yet deployed. No changes to the existing Railway project or attached volumes.
